@@ -19,132 +19,153 @@
    ══════════════════════════════════════════════════════════════ */
 
 @font-face {
-  font-family: 'Geist'; font-style: normal; font-weight: 400 600;
-  font-display: swap; src: url('/static/fonts/geist.woff2') format('woff2');
-}
-@font-face {
-  font-family: 'Geist Mono'; font-style: normal; font-weight: 400 500;
-  font-display: swap; src: url('/static/fonts/geist-mono.woff2') format('woff2');
+  font-family: 'Ubuntu Sans'; font-style: normal; font-weight: 100 800; font-stretch: 75% 100%;
+  font-display: swap; src: url('/static/fonts/ubuntu-sans.woff2') format('woff2');
 }
 
 /* ── Tokens ──────────────────────────────────────────────────── */
 
 :root {
-  --sans: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --mono: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  --sans: 'Ubuntu Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', sans-serif;
+  --mono: ui-monospace, Menlo, Consolas, 'SF Mono', 'Liberation Mono', monospace;
 
-  /* Type scale: size / line-height pairs, by role. */
-  --fs-caption: 0.75rem;     /* 12 */
-  --fs-ui:      0.8125rem;   /* 13 */
-  --fs-body:    0.875rem;    /* 14 */
-  --fs-lead:    0.9375rem;   /* 15 */
-  --fs-h3:      1rem;        /* 16 */
-  --fs-h2:      1.375rem;    /* 22 */
-  --fs-kpi:     1.75rem;     /* 28 */
+  /* Type scale: dense, by role. */
+  --fs-caption: 0.6875rem;   /* 11: table heads, badges, help */
+  --fs-ui:      0.75rem;     /* 12: controls, tables, body */
+  --fs-body:    0.75rem;     /* 12 */
+  --fs-lead:    0.8125rem;   /* 13: card titles */
+  --fs-h3:      0.9375rem;   /* 15: section titles */
+  --fs-h2:      1.25rem;     /* 20: page titles */
+  --fs-kpi:     1rem;        /* 16: metric values */
 
   /* Spacing: one step per nesting level. */
   --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px;
   --sp-5: 24px; --sp-6: 32px; --sp-7: 48px;
 
-  /* Radii: controls sit inside cards with 6px padding+, so cards are
-     concentric with the controls they hold. */
   --r-xs: 4px;   /* tags, kbd */
   --r-sm: 6px;   /* buttons, inputs */
-  --r-md: 10px;  /* inner panels */
-  --r-lg: 14px;  /* cards */
+  --r-md: 8px;   /* cards, popovers */
+  --r-lg: 8px;   /* cards */
+  --r-xl: 12px;  /* modals */
 
-  --sidebar-w: 236px;
+  --sidebar-w: 244px;
   --content-w: 1180px;
+  --row-h: 34px;
 
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
 
-  /* Light — neutral, a touch cool. */
-  --bg:          #F6F6F7;
+  /* Light: white surfaces, cool greys, one teal for anything actionable. */
+  --bg:          #FFFFFF;
   --surface:     #FFFFFF;
-  --surface-2:   #F3F3F4;   /* hover, inset panels */
-  --surface-3:   #EBEBED;   /* pressed, tracks */
-  --line:        #E7E7EA;
-  --line-strong: #D6D6DB;
-  --text:        #111113;
-  --text-2:      #5B5B63;
-  --text-3:      #8B8B93;
-  --accent:      #1D4ED8;
-  --accent-hover:#1E40AF;
+  --surface-2:   #F6F8FA;   /* hover, inset panels */
+  --surface-3:   #EBEEF1;   /* pressed, tracks */
+  --line:        #EBEEF1;
+  --line-strong: #D5DBE1;
+  --text:        #21252C;
+  --text-2:      #545969;
+  --text-3:      #687385;
+  --brand: #003c3a;
+  --brand-hover: #0b5350;
+  --brand-300:   #8fbab7;
+  --brand-100:   #d6e8e6;
+  --brand-50:    #eef5f4;
+  --accent-orange: #f86a24;
+  --accent:      var(--brand);
+  --accent-hover:var(--brand-hover);
   --accent-text: #FFFFFF;
-  --accent-soft: #EBF1FE;
-  --accent-line: #CCDBFC;
-  --chart-muted: #BCD0FA;
+  --accent-soft: var(--brand-50);
+  --accent-line: var(--brand-100);
+  --chart-muted: var(--brand-300);
 
-  --good:   #1F7A4D; --good-bg:   #E8F6EE; --good-line:   #C6EAD5;
-  --wait:   #8A5A00; --wait-bg:   #FFF4DE; --wait-line:   #F6DFAE;
-  --bad:    #B4232F; --bad-bg:    #FDECEE; --bad-line:    #F7CDD2;
-  --active: #0E7490; --active-bg: #E5F6F9; --active-line: #BDE5EE;
+  --good:   #217005; --good-bg:   #D1FAB3; --good-line:   #A8E28E;
+  --wait:   #8A4B00; --wait-bg:   #FEF8CA; --wait-line:   #F5DE7A;
+  --bad:    #B3093C; --bad-bg:    #FFE8EE; --bad-line:    #FFC4D3;
+  --active: #0055BC; --active-bg: #CFF4FC; --active-line: #A4E3F5;
   --note:   #6A3FB0; --note-bg:   #F2ECFC; --note-line:   #DFD1F6;
 
-  --shadow-border:
-    0 0 0 1px rgb(17 17 19 / 0.06),
-    0 1px 2px -1px rgb(17 17 19 / 0.06),
-    0 2px 4px 0 rgb(17 17 19 / 0.04);
-  --shadow-border-hover:
-    0 0 0 1px rgb(17 17 19 / 0.09),
-    0 1px 2px -1px rgb(17 17 19 / 0.08),
-    0 2px 6px 0 rgb(17 17 19 / 0.06);
-  --shadow-pop: 0 0 0 1px rgb(17 17 19 / 0.08), 0 12px 32px -8px rgb(17 17 19 / 0.18);
-  --btn-shadow: 0 0 0 1px rgb(17 17 19 / 0.10), 0 1px 2px rgb(17 17 19 / 0.06);
-  --btn-primary-shadow: inset 0 1px 0 rgb(255 255 255 / 0.18), 0 0 0 1px #1A44C2, 0 1px 2px rgb(17 17 19 / 0.12);
+  --shadow-border: 0 0 0 1px var(--line);
+  --shadow-border-hover: 0 0 0 1px var(--line-strong);
+  --shadow-pop: 0 0 0 1px rgb(64 68 82 / 0.08), 0 3px 6px rgb(0 0 0 / 0.12), 0 7px 14px rgb(64 68 82 / 0.08);
+  --btn-shadow: 0 0 0 1px var(--line-strong), 0 1px 1px rgb(0 0 0 / 0.06);
+  --btn-primary-shadow: 0 0 0 1px var(--brand), 0 1px 1px rgb(0 0 0 / 0.12);
   color-scheme: light;
 }
 
-/* Dark — near-black, neutral. Declared twice on purpose: once for an
-   explicit choice, once for the system preference when none is chosen. */
+/* Dark: a cool near-black with a teal cast; teal is lifted so primary
+   buttons still read. Declared twice on purpose: once for an explicit
+   choice, once for the system preference when none is chosen. */
 :root[data-theme='dark'] {
-  --bg:          #0E0E10;
-  --surface:     #161618;
-  --surface-2:   #1D1D20;
-  --surface-3:   #26262A;
-  --line:        #26262A;
-  --line-strong: #34343A;
-  --text:        #F3F3F5;
-  --text-2:      #A3A3AC;
-  --text-3:      #6E6E77;
-  --accent:      #3D6FF5;
-  --accent-hover:#5A85FF;
+  --bg:          #0E1312;
+  --surface:     #141A19;
+  --surface-2:   #1A2120;
+  --surface-3:   #222B2A;
+  --line:        #232C2B;
+  --line-strong: #31403E;
+  --text:        #E8EDEC;
+  --text-2:      #AEB8B6;
+  --text-3:      #8A9694;
+  --brand:       #0F6B66;
+  --brand-hover: #12807A;
+  --brand-300:   #3E8F8A;
+  --brand-100:   #1D4441;
+  --brand-50:    #0F2A28;
+  --accent-orange: #F86A24;
+  --accent:      var(--brand);
+  --accent-hover:var(--brand-hover);
   --accent-text: #FFFFFF;
-  --accent-soft: #111C36;
-  --accent-line: #1E3366;
-  --chart-muted: #22365F;
+  --accent-soft: var(--brand-50);
+  --accent-line: var(--brand-100);
+  --chart-muted: #2B5653;
 
-  --good:   #5CCB8F; --good-bg:   #10261B; --good-line:   #1C4130;
+  --good:   #6FD38F; --good-bg:   #12261A; --good-line:   #1F4229;
   --wait:   #F0B84F; --wait-bg:   #2A2010; --wait-line:   #4A3817;
-  --bad:    #FF7A85; --bad-bg:    #2C1316; --bad-line:    #4C1F25;
-  --active: #4CC3D9; --active-bg: #0C2328; --active-line: #164049;
+  --bad:    #FF7A8F; --bad-bg:    #2C1318; --bad-line:    #4C1F28;
+  --active: #6CB8FF; --active-bg: #0D1E33; --active-line: #1B3A5C;
   --note:   #B79BF5; --note-bg:   #1E1730; --note-line:   #352857;
 
-  --shadow-border: 0 0 0 1px rgb(255 255 255 / 0.07);
-  --shadow-border-hover: 0 0 0 1px rgb(255 255 255 / 0.12);
+  --shadow-border: 0 0 0 1px var(--line);
+  --shadow-border-hover: 0 0 0 1px var(--line-strong);
   --shadow-pop: 0 0 0 1px rgb(255 255 255 / 0.09), 0 16px 40px -8px rgb(0 0 0 / 0.6);
-  --btn-shadow: inset 0 1px 0 rgb(255 255 255 / 0.06), 0 0 0 1px rgb(255 255 255 / 0.10);
-  --btn-primary-shadow: inset 0 1px 0 rgb(255 255 255 / 0.20), 0 0 0 1px rgb(0 0 0 / 0.4);
+  --btn-shadow: 0 0 0 1px var(--line-strong);
+  --btn-primary-shadow: 0 0 0 1px var(--brand);
   color-scheme: dark;
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme='light']) {
-    --bg:#0E0E10; --surface:#161618; --surface-2:#1D1D20; --surface-3:#26262A;
-    --line:#26262A; --line-strong:#34343A;
-    --text:#F3F3F5; --text-2:#A3A3AC; --text-3:#6E6E77;
-    --accent:#3D6FF5; --accent-hover:#5A85FF; --accent-text:#FFFFFF;
-    --accent-soft:#111C36; --accent-line:#1E3366; --chart-muted:#22365F;
-    --good:#5CCB8F; --good-bg:#10261B; --good-line:#1C4130;
-    --wait:#F0B84F; --wait-bg:#2A2010; --wait-line:#4A3817;
-    --bad:#FF7A85; --bad-bg:#2C1316; --bad-line:#4C1F25;
-    --active:#4CC3D9; --active-bg:#0C2328; --active-line:#164049;
-    --note:#B79BF5; --note-bg:#1E1730; --note-line:#352857;
-    --shadow-border: 0 0 0 1px rgb(255 255 255 / 0.07);
-    --shadow-border-hover: 0 0 0 1px rgb(255 255 255 / 0.12);
+    --bg:          #0E1312;
+    --surface:     #141A19;
+    --surface-2:   #1A2120;
+    --surface-3:   #222B2A;
+    --line:        #232C2B;
+    --line-strong: #31403E;
+    --text:        #E8EDEC;
+    --text-2:      #AEB8B6;
+    --text-3:      #8A9694;
+    --brand:       #0F6B66;
+    --brand-hover: #12807A;
+    --brand-300:   #3E8F8A;
+    --brand-100:   #1D4441;
+    --brand-50:    #0F2A28;
+    --accent-orange: #F86A24;
+    --accent:      var(--brand);
+    --accent-hover:var(--brand-hover);
+    --accent-text: #FFFFFF;
+    --accent-soft: var(--brand-50);
+    --accent-line: var(--brand-100);
+    --chart-muted: #2B5653;
+
+    --good:   #6FD38F; --good-bg:   #12261A; --good-line:   #1F4229;
+    --wait:   #F0B84F; --wait-bg:   #2A2010; --wait-line:   #4A3817;
+    --bad:    #FF7A8F; --bad-bg:    #2C1318; --bad-line:    #4C1F28;
+    --active: #6CB8FF; --active-bg: #0D1E33; --active-line: #1B3A5C;
+    --note:   #B79BF5; --note-bg:   #1E1730; --note-line:   #352857;
+
+    --shadow-border: 0 0 0 1px var(--line);
+    --shadow-border-hover: 0 0 0 1px var(--line-strong);
     --shadow-pop: 0 0 0 1px rgb(255 255 255 / 0.09), 0 16px 40px -8px rgb(0 0 0 / 0.6);
-    --btn-shadow: inset 0 1px 0 rgb(255 255 255 / 0.06), 0 0 0 1px rgb(255 255 255 / 0.10);
-    --btn-primary-shadow: inset 0 1px 0 rgb(255 255 255 / 0.20), 0 0 0 1px rgb(0 0 0 / 0.4);
+    --btn-shadow: 0 0 0 1px var(--line-strong);
+    --btn-primary-shadow: 0 0 0 1px var(--brand);
     color-scheme: dark;
   }
 }
