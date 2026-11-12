@@ -94,3 +94,52 @@ def test_logo_served(client):
     r = client.get("/static/sellbird-logo.png")
     assert r.status_code == 200 and r.headers["content-type"] == "image/png"
     assert "/static/sellbird-logo.png" in (WEB / "index.html").read_text(encoding="utf-8")
+
+
+# ── Contrast and layout ──
+
+
+def _tokens(block: str) -> dict:
+    """``--name: #hex`` pairs in a CSS block, with var(--x) resolved within it."""
+    raw = dict(re.findall(r"--([\w-]+):\s*([^;]+);", block))
+    out = {}
+    for name, value in raw.items():
+        value = value.strip()
+        seen = 0
+        while value.startswith("var(--") and seen < 5:
+            value = raw.get(value[6:-1], "").strip()
+            seen += 1
+        if re.fullmatch(r"#[0-9a-fA-F]{6}", value):
+            out[name] = value
+    return out
+
+
+def _contrast(a: str, b: str) -> float:
+    def lum(h):
+        rgb = [int(h[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+        rgb = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in rgb]
+        return 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]
+    hi, lo = sorted((lum(a), lum(b)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+@pytest.mark.parametrize("selector", [":root", ":root[data-theme='dark']"])
+def test_contrast_meets_aa(selector):
+    t = _tokens(_block(_css(), selector))
+    pairs = [("text", "surface"), ("text-2", "surface"), ("text-3", "surface"), ("text-3", "surface-2")]
+    pairs += [(s, s + "-bg") for s in ("good", "wait", "bad", "active", "note")]
+    for fg, bg in pairs:
+        assert _contrast(t[fg], t[bg]) >= 4.5, (selector, fg, bg)
+    assert _contrast("#ffffff", t["brand"]) >= 4.5, (selector, "white on brand")
+
+
+def test_system_dark_matches_explicit_dark():
+    css = _css()
+    explicit = _tokens(_block(css, ":root[data-theme='dark']"))
+    system = _tokens(_block(css, "  :root:not([data-theme='light'])"))
+    assert explicit == system
+
+
+def test_wide_tables_scroll_inside_card():
+    rule = re.search(r"\.ui-table-wrap\s*\{([^}]*)\}", _css())
+    assert rule and "overflow-x: auto" in rule.group(1)
