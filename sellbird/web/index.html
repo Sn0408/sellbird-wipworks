@@ -44,6 +44,7 @@
     <symbol id="i-sparkle" viewBox="0 0 24 24"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6.3 6.3l2.5 2.5M15.2 15.2l2.5 2.5M6.3 17.7l2.5-2.5M15.2 8.8l2.5-2.5"/></symbol>
     <symbol id="i-pen" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/></symbol>
     <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></symbol>
     <symbol id="i-flag" viewBox="0 0 24 24"><path d="M5 21V4M5 4h11l-2 4 2 4H5"/></symbol>
   </defs>
 </svg>
@@ -102,24 +103,23 @@
     </div>
   </nav>
 
-  <div class="sidebar-foot">
+  <div class="sidebar-foot" hidden>
     <div class="sellbird-status" id="header-status">
       <span class="status-dot stopped" id="header-dot"></span>
       <span id="header-status-text">Checking…</span>
-    </div>
-    <div class="foot-actions">
-      <div class="theme-switch" role="group" aria-label="Appearance">
-        <button data-theme-opt="auto" onclick="setTheme('auto')" title="Match your computer" aria-label="Match your computer"><svg class="icon" aria-hidden="true"><use href="#i-monitor"/></svg></button>
-        <button data-theme-opt="light" onclick="setTheme('light')" title="Light" aria-label="Light"><svg class="icon" aria-hidden="true"><use href="#i-sun"/></svg></button>
-        <button data-theme-opt="dark" onclick="setTheme('dark')" title="Dark" aria-label="Dark"><svg class="icon" aria-hidden="true"><use href="#i-moon"/></svg></button>
-      </div>
-      <button class="refresh-btn" onclick="loadCurrentTab()" title="Refresh this page">
-        <svg class="icon" style="width:13px;height:13px"><use href="#i-refresh"/></svg>Refresh</button>
     </div>
   </div>
 </aside>
 
 <main class="content">
+<header class="ui-topbar">
+  <div class="theme-switch" role="group" aria-label="Appearance">
+        <button data-theme-opt="auto" onclick="setTheme('auto')" title="Match your computer" aria-label="Match your computer"><svg class="icon" aria-hidden="true"><use href="#i-monitor"/></svg></button>
+        <button data-theme-opt="light" onclick="setTheme('light')" title="Light" aria-label="Light"><svg class="icon" aria-hidden="true"><use href="#i-sun"/></svg></button>
+        <button data-theme-opt="dark" onclick="setTheme('dark')" title="Dark" aria-label="Dark"><svg class="icon" aria-hidden="true"><use href="#i-moon"/></svg></button>
+      </div>
+  <div class="ui-topbar__right" id="topbar-run"></div>
+</header>
 <div class="content-inner">
 
 <!-- Today: what needs a human -->

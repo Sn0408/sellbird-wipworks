@@ -1293,3 +1293,30 @@ dialog.modal::backdrop { background: rgb(0 0 0 / 0.45); }
 .ui-search input { padding-left: 28px; }
 .ui-toolbar { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; margin-bottom: var(--sp-3); }
 .ui-toolbar .spacer { flex: 1; }
+
+/* ── Top bar ─────────────────────────────────────────────────── */
+
+.sidebar-foot[hidden] { display: none; }
+main.content { padding-top: 0; }
+.ui-topbar {
+  position: sticky; top: 0; z-index: 30;
+  display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3);
+  height: 56px; margin: 0 calc(-1 * var(--sp-6)) var(--sp-5); padding: 0 var(--sp-6);
+  background: var(--surface); border-bottom: 1px solid var(--line);
+}
+.ui-topbar__right { display: flex; align-items: center; gap: var(--sp-3); }
+.topbar-run { font-size: var(--fs-lead); }
+.topbar-bell {
+  position: relative; width: 28px; height: 28px; display: grid; place-items: center;
+  border: none; border-radius: var(--r-sm); background: none; color: var(--text-2); cursor: pointer;
+}
+@media (hover: hover) { .topbar-bell:hover { background: var(--surface-2); color: var(--text); } }
+.topbar-bell.has-dot::after {
+  content: ''; position: absolute; top: 5px; right: 6px; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--accent-orange); box-shadow: 0 0 0 2px var(--surface);
+}
+@media (max-width: 900px) {
+  main.content { padding-top: 0; }
+  .ui-topbar { position: static; height: 48px; margin: 0 calc(-1 * var(--sp-4)) var(--sp-4); padding: 0 var(--sp-4); }
+  .topbar-run { font-size: var(--fs-ui); }
+}

@@ -143,3 +143,64 @@ def test_system_dark_matches_explicit_dark():
 def test_wide_tables_scroll_inside_card():
     rule = re.search(r"\.ui-table-wrap\s*\{([^}]*)\}", _css())
     assert rule and "overflow-x: auto" in rule.group(1)
+
+
+# ── Top bar ──
+
+TOPBAR = ("escHtml", "icon", "topbarHtml")
+
+
+def _topbar(state):
+    return run_js(TOPBAR, f"topbarHtml({json.dumps(state)})")
+
+
+def test_topbar_running():
+    html = _topbar({"running": True, "busy": False, "waiting": 0})
+    assert "Sellbird running" in html
+    assert re.search(r'<input[^>]*type="checkbox"[^>]*\schecked(?=[\s>])', html)
+    assert "has-dot" not in html
+    assert 'aria-label="Notifications"' in html and "goTab('today')" in html
+    assert "loadCurrentTab()" in html
+
+
+def test_topbar_stopped_with_waiting_items_shows_dot():
+    html = _topbar({"running": False, "busy": False, "waiting": 3})
+    assert not re.search(r"<input[^>]*\schecked(?=[\s>])", html)
+    assert "has-dot" in html
+
+
+def test_topbar_unknown_status_disables_switch():
+    html = _topbar({"running": None, "busy": False, "waiting": 0})
+    assert re.search(r"<input[^>]*\sdisabled(?=[\s>])", html)
+    busy = _topbar({"running": True, "busy": True, "waiting": 0})
+    assert re.search(r"<input[^>]*\sdisabled(?=[\s>])", busy)
+
+
+def _set_running(on, reply):
+    prelude = (
+        "let _topbar = {running: " + json.dumps(not on) + ", busy: false, waiting: 0};\n"
+        "const toasts = [], calls = [];\n"
+        "const api = async (path, opts) => { calls.push(path); return " + json.dumps(reply) + "; };\n"
+        "const showToast = (m, t) => toasts.push(t);\n"
+        "const loadSellbirdStatus = () => {};\n"
+        "let rendered = '';\n"
+        "const document = {getElementById: () => ({set innerHTML(v) { rendered = v; }})};\n"
+    )
+    call = f"setRunning({json.dumps(on)}).then(() => JSON.stringify({{state: _topbar, toasts, calls}}))"
+    return json.loads(run_js((*TOPBAR, "renderTopbar", "setRunning"), call, prelude))
+
+
+def test_running_switch_reverts_on_failure():
+    out = _set_running(True, {"error": "x"})
+    assert out["state"]["running"] is False and out["state"]["busy"] is False
+    assert out["toasts"] == ["error"]
+    assert out["calls"] == ["/api/sellbird/start"]
+
+
+def test_running_switch_keeps_state_on_success():
+    out = _set_running(False, {"success": True})
+    assert out["state"]["running"] is False
+    assert out["toasts"] == ["success"]
+    assert out["calls"] == ["/api/sellbird/stop"]
+    lost = _set_running(True, None)  # API offline
+    assert lost["state"]["running"] is False and lost["toasts"] == ["error"]

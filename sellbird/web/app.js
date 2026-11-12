@@ -628,6 +628,7 @@ async function loadTodayActivity() {
 }
 
 function navCount(id, n) {
+  if (id === 'nav-today') { _topbar = {..._topbar, waiting: n}; renderTopbar(); }
   const el = document.getElementById(id);
   if (!el) return;
   el.textContent = n > 0 ? n : '';
@@ -1418,9 +1419,11 @@ async function loadSellbirdStatus() {
   if (!data) {
     headerDot.className = 'status-dot offline';
     headerText.textContent = 'Offline';
+    if (!_topbar.busy) { _topbar = {..._topbar, running: null}; renderTopbar(); }
     return;
   }
   const running = !!data.running;
+  if (!_topbar.busy) { _topbar = {..._topbar, running}; renderTopbar(); }
 
   headerDot.className = 'status-dot ' + (running ? 'running' : 'stopped');
   headerText.textContent = running ? 'Sellbird is running' : 'Sellbird is stopped';
@@ -1459,6 +1462,40 @@ async function stopSellbird() {
   if (data && data.success) showToast('Sellbird stopped.', 'success');
   else showToast((data && data.message) || 'Failed to stop.', 'error');
   btn.disabled = false;
+  loadSellbirdStatus();
+}
+
+// ── Top bar: the running switch, refresh, and what needs you ──
+
+let _topbar = {running: null, busy: false, waiting: 0};
+
+function topbarHtml(state) {
+  const off = state.busy || state.running === null || state.running === undefined;
+  return '<label class="ui-switch topbar-run">Sellbird running' +
+      '<input type="checkbox" role="switch" aria-label="Sellbird running"' +
+      (state.running ? ' checked' : '') + (off ? ' disabled' : '') +
+      ' onchange="setRunning(this.checked)"></label>' +
+    '<button class="btn btn-secondary" onclick="loadCurrentTab()" title="Refresh this page">Refresh</button>' +
+    '<button class="topbar-bell' + (state.waiting > 0 ? ' has-dot' : '') + '" aria-label="Notifications"' +
+      ' title="' + (state.waiting > 0 ? escHtml(String(state.waiting)) + ' waiting on you' : 'Nothing waiting on you') + '"' +
+      ' onclick="goTab(\'today\')">' + icon('bell') + '</button>';
+}
+
+function renderTopbar() {
+  const el = document.getElementById('topbar-run');
+  if (el) el.innerHTML = topbarHtml(_topbar);
+}
+
+async function setRunning(on) {
+  const before = _topbar.running;
+  _topbar = {..._topbar, running: on, busy: true};
+  renderTopbar();
+  const data = await api(on ? '/api/sellbird/start' : '/api/sellbird/stop', {method: 'POST'});
+  const ok = !!(data && data.success);
+  _topbar = {..._topbar, running: ok ? on : before, busy: false};
+  if (ok) showToast(on ? 'Sellbird started.' : 'Sellbird stopped.', 'success');
+  else showToast((data && data.message) || (on ? 'Failed to start.' : 'Failed to stop.'), 'error');
+  renderTopbar();
   loadSellbirdStatus();
 }
 
