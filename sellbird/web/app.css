@@ -245,7 +245,7 @@ svg.icon { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: no
 @media (prefers-color-scheme: dark) { :root:not([data-theme='light']) .brand-lockup img { filter: invert(1) hue-rotate(180deg) brightness(1.1); } }
 .brand .tagline { display: none; }
 
-nav { display: flex; flex-direction: column; gap: var(--sp-4); }
+.sidebar nav { display: flex; flex-direction: column; gap: var(--sp-4); }
 .nav-group { display: flex; flex-direction: column; gap: 1px; }
 .nav-label {
   font-size: var(--fs-ui); font-weight: 400; color: var(--text-2);
@@ -1017,7 +1017,7 @@ textarea.form-input { height: auto; padding: 8px 10px; }
     border-right: none; border-bottom: 1px solid var(--line); overflow: visible;
   }
   .brand .tagline { display: none; }
-  nav { order: 3; width: 100%; flex-direction: row; gap: 2px; overflow-x: auto; scrollbar-width: none; margin: 0 calc(-1 * var(--sp-4)); padding: 0 var(--sp-4) 2px; width: calc(100% + 2 * var(--sp-4)); }
+  .sidebar nav { order: 3; width: 100%; flex-direction: row; gap: 2px; overflow-x: auto; scrollbar-width: none; margin: 0 calc(-1 * var(--sp-4)); padding: 0 var(--sp-4) 2px; width: calc(100% + 2 * var(--sp-4)); }
   nav::-webkit-scrollbar { display: none; }
   .nav-group { flex-direction: row; gap: 2px; }
   .nav-label { display: none; }
