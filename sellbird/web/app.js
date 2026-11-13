@@ -914,6 +914,8 @@ async function useOtherWarmup() {
 
 // ── Signals: Sellbird proposes, you confirm ──
 
+let _sigTab = null;
+
 async function loadSignals() {
   const data = await api('/api/signals');
   const sumEl = document.getElementById('signals-summary');
@@ -921,76 +923,127 @@ async function loadSignals() {
   if (!data || data.error) { grpEl.innerHTML = offlineState(); sumEl.innerHTML = ''; return; }
   _signals = data;
 
-  const s = data.summary || {};
-  navCount('nav-signals', s.proposed || 0);
-  const parts = [['Confirmed', s.confirmed || 0, 'c-good'], ['Waiting on you', s.proposed || 0, 'c-wait'],
-                 ['Turned off', s.rejected || 0, 'c-idle']];
-  const all = parts.reduce((x, p) => x + p[1], 0) || 1;
-  sumEl.innerHTML = '<div class="card sig-summary"><div class="funnel-bar">' +
-    parts.filter(p => p[1]).map(p => '<span class="seg ' + p[2] + '" style="flex:' + p[1] + '"></span>').join('') +
-    '</div><div class="funnel-legend">' + parts.map(p =>
-      '<div class="legend-item"><span class="legend-key"><i class="' + p[2] + '"></i>' + p[0] + '</span>' +
-      '<span class="legend-val">' + p[1] + '<small>' + Math.round(100 * p[1] / all) + '%</small></span></div>'
-    ).join('') + '</div></div>';
+  navCount('nav-signals', (data.summary || {}).proposed || 0);
+  sumEl.innerHTML = signalsSummary(data);
 
-  grpEl.innerHTML = (data.groups || []).map(g => {
-    // Only the undecided ones: "Confirm all" must never re-enable a signal
-    // you turned off (or "Skip all" turn off one you confirmed).
-    const pending = escHtml(JSON.stringify(g.signals.filter(x => x.status === 'proposed').map(x => x.code)));
-    const undecided = g.signals.filter(x => x.status === 'proposed').length;
-    return '<div class="sig-group">' +
-      '<div class="sig-group-head"><div>' +
-        '<h3>' + escHtml(g.label) + '</h3><p>' + escHtml(g.blurb) + '</p>' +
-      '</div>' +
-      (undecided
-        ? '<div style="display:flex;gap:6px;flex-shrink:0">' +
-            '<button class="btn btn-primary btn-sm" onclick="setSignals(' + pending +
-              ', \'confirmed\')">Confirm all ' + undecided + '</button>' +
-            '<button class="btn btn-secondary btn-sm" onclick="setSignals(' + pending +
-              ', \'rejected\')">Skip all ' + undecided + '</button>' +
-          '</div>'
-        : '') +
-      '</div>' +
-      '<div class="card flush">' + g.signals.map(sigRow).join('') + '</div>' +
-    '</div>';
-  }).join('');
-
+  const groups = signalGroups(data.groups || []);
+  // Open on the first tab with something to decide; then stay where you are.
+  if (!_sigTab) {
+    const waiting = groups.find(g => g.signals.some(s => s.status === 'proposed'));
+    _sigTab = waiting ? waiting.key : 'discovery';
+  }
+  renderSignalTab(groups);
   renderCohortBuilder();
 }
 
-function sigRow(sig) {
-  const free = /free|included/i.test(sig.cost_note || '');
-  const costCls = free ? 'free' : (/\$/.test(sig.cost_note || '') ? 'paid' : '');
-  const seen = sig.companies
-    ? '<span class="cost-chip">seen on ' + sig.companies +
-      (sig.companies === 1 ? ' company' : ' companies') + ' so far</span>' : '';
+function renderSignalTab(groups) {
+  groups = groups || signalGroups((_signals || {}).groups || []);
+  const tabsEl = document.getElementById('signals-tabs');
+  const grpEl = document.getElementById('signals-groups');
+  const cohortEl = document.getElementById('signals-cohort');
+  if (tabsEl) tabsEl.innerHTML = signalTabsFor(groups, _sigTab);
+  const isCohort = _sigTab === 'cohort';
+  if (cohortEl) cohortEl.hidden = !isCohort;
+  const g = groups.find(x => x.key === _sigTab);
+  grpEl.innerHTML = isCohort ? '' : (g ? signalGroupCard(g) : '');
+}
+
+function pickSignalTab(key) {
+  _sigTab = key;
+  renderSignalTab();
+}
+
+// Category → sub-tab. Anything the dashboard doesn't know yet lands in Profile.
+function signalGroups(groups) {
+  // The four sub-tabs, keyed by the catalog's own category.
+  const tabs = [['discovery', 'Discovery'], ['profile', 'Profile'], ['people', 'People'], ['verification', 'Contactability']];
+  const out = tabs.map(([key, tab]) => ({key, tab, title: tab, blurb: '', signals: []}));
+  const byKey = Object.fromEntries(out.map(g => [g.key, g]));
+  (groups || []).forEach(g => {
+    const home = byKey[g.key];
+    if (home && g.label) { home.title = String(g.label).replace(/\s+—\s+/, ': '); home.blurb = g.blurb || ''; }
+    (g.signals || []).forEach(s => (byKey[s.category] || byKey[g.key] || byKey.profile).signals.push(s));
+  });
+  return out;
+}
+
+function signalTabsFor(groups, active) {
+  const items = (groups || []).map(g => {
+    const waiting = (g.signals || []).filter(s => s.status === 'proposed').length;
+    return {key: g.key, label: g.tab, count: waiting || null};
+  });
+  items.push({key: 'cohort', label: 'Cohort builder'});
+  return uiTabs(items, active, k => 'pickSignalTab(' + jsq(k) + ')');
+}
+
+function signalsSummary(data) {
+  const s = (data && data.summary) || {};
+  const confirmed = s.confirmed || 0, proposed = s.proposed || 0, rejected = s.rejected || 0;
+  const total = confirmed + proposed + rejected;
+  const pct = n => total ? Math.round(100 * n / total) + '%' : '0%';
+  const seen = ((data && data.groups) || []).flatMap(g => g.signals || [])
+    .reduce((m, x) => Math.max(m, Number(x.companies) || 0), 0);
+  return uiMetricStrip([
+    {label: 'Confirmed', value: confirmed, sub: pct(confirmed) + ' of signals'},
+    {label: 'Waiting on you', value: proposed, sub: proposed ? 'to confirm or skip' : 'nothing to decide'},
+    {label: 'Turned off', value: rejected, sub: pct(rejected)},
+    {label: 'Companies scored', value: seen, sub: 'on the most-collected signal'},
+  ]);
+}
+
+function signalGroupCard(g) {
+  const sigs = g.signals || [];
+  const on = sigs.filter(s => s.status === 'confirmed').length;
+  // Only the undecided ones: "Confirm all" must never re-enable a signal
+  // you turned off (or "Skip all" turn off one you confirmed).
+  const pendingCodes = sigs.filter(s => s.status === 'proposed').map(s => s.code);
+  const pending = escHtml(JSON.stringify(pendingCodes));
+  const bulk = pendingCodes.length
+    ? '<button class="btn btn-primary btn-sm" onclick="setSignals(' + pending + ', \'confirmed\')">Confirm all '
+        + pendingCodes.length + '</button>'
+      + '<button class="btn btn-secondary btn-sm" onclick="setSignals(' + pending + ', \'rejected\')">Skip all '
+        + pendingCodes.length + '</button>'
+    : '';
+  const action = '<span class="sig-card-action">' + bulk + '<span>' + sigs.length + ' signal' + (sigs.length === 1 ? '' : 's')
+    + ' · ' + on + ' on</span></span>';
+  const body = (g.blurb ? '<p class="sig-blurb">' + escHtml(g.blurb) + '</p>' : '')
+    + (sigs.length ? '<div class="sig-list">' + sigs.map(signalRow).join('') + '</div>'
+                   : uiEmpty('No signals in this group yet'));
+  return uiCard({title: g.title || g.tab, action, body, cls: 'sig-card'});
+}
+
+function signalRow(sig) {
+  const note = sig.cost_note || '';
+  const paid = !/free|included/i.test(note) && /\$|credit|paid/i.test(note);
+  const n = Number(sig.companies) || 0;
+  const seen = n ? 'seen on ' + n + (n === 1 ? ' company' : ' companies') + ' so far' : 'not collected yet';
   const floor = sig.confidence_floor > 0
-    ? '<span class="cost-chip">only recorded above ' +
-      Math.round(sig.confidence_floor * 100) + '% confidence</span>' : '';
+    ? '<span>·</span><span>only recorded above ' + Math.round(sig.confidence_floor * 100) + '% confidence</span>' : '';
+  const code = jsq(sig.code);
 
-  const decide = sig.status === 'confirmed'
-    ? '<button class="btn btn-secondary btn-sm" onclick="setSignals([' + jsq(sig.code) +
-        '],\'rejected\')">Turn off</button>'
-    : sig.status === 'rejected'
-      ? '<button class="btn btn-secondary btn-sm" onclick="setSignals([' + jsq(sig.code) +
-          '],\'confirmed\')">Turn on</button>'
-      : '<button class="btn btn-primary btn-sm" onclick="setSignals([' + jsq(sig.code) +
-          '],\'confirmed\')">Confirm</button>' +
-        '<button class="btn btn-secondary btn-sm" onclick="setSignals([' + jsq(sig.code) +
-          '],\'rejected\')">Skip</button>';
+  let decide;
+  if (sig.status === 'confirmed' || sig.status === 'rejected') {
+    const on = sig.status === 'confirmed';
+    decide = (on ? uiBadge('success', 'Confirmed', 'check') : uiBadge('neutral', 'Off'))
+      + uiSwitch({checked: on, onChange: 'setSignals([' + code + '], this.checked ? \'confirmed\' : \'rejected\')'})
+        .replace('<input ', '<input aria-label="' + escHtml(sig.label || sig.code) + '" ');
+  } else {
+    // Undecided is not "off": it gets explicit buttons, never a switch.
+    decide = uiBadge('warning', 'Waiting on you')
+      + '<button class="btn btn-primary btn-sm" onclick="setSignals([' + code + '],\'confirmed\')">Confirm</button>'
+      + '<button class="btn btn-secondary btn-sm" onclick="setSignals([' + code + '],\'rejected\')">Skip</button>';
+  }
 
-  return '<div class="sig-row ' + (sig.status === 'rejected' ? 'rejected' : '') + '">' +
-    '<div class="sig-main">' +
-      '<div class="sig-label">' + escHtml(sig.label || sig.code) +
-        '<span class="sig-code">' + escHtml(sig.code) + '</span></div>' +
-      '<div class="sig-desc">' + escHtml(sig.description) + '</div>' +
-      '<div class="sig-meta">' +
-        '<span class="cost-chip ' + costCls + '">' + escHtml(sig.cost_note || 'cost unknown') + '</span>' +
-        floor + seen + badge(sig.status) +
-      '</div>' +
-    '</div>' +
-    '<div class="sig-decide">' + decide + '</div>' +
-  '</div>';
+  return '<div class="sig-row' + (sig.status === 'rejected' ? ' is-off' : '') + '">'
+    + '<div class="sig-main">'
+      + '<div class="sig-label"><span class="sig-name">' + escHtml(sig.label || sig.code) + '</span>'
+        + '<span class="sig-code">' + escHtml(sig.code) + '</span></div>'
+      + '<p class="sig-desc">' + escHtml(sig.description || '') + '</p>'
+      + '<div class="sig-meta">' + (paid ? uiBadge('warning', 'Paid') : '')
+        + '<span>' + uiDash(note) + '</span><span>·</span><span>' + seen + '</span>' + floor + '</div>'
+    + '</div>'
+    + '<div class="sig-decide">' + decide + '</div>'
+  + '</div>';
 }
 
 async function setSignals(codes, status) {
@@ -1016,34 +1069,19 @@ async function setSignals(codes, status) {
 
 let _provider = null;
 let _discoverPoll = null;
+let _discoverView = null;   // null: the sources table; a provider key: that source's page
+let _discoverData = null;
+let _discoverRuns = [];
 
 async function loadDiscoverProviders() {
   const el = document.getElementById('discover-providers');
-  const data = await api('/api/discover/providers');
+  const [data, runs] = await Promise.all([api('/api/discover/providers'), api('/api/runs')]);
   if (!data || !data.providers) { el.innerHTML = offlineState(); return; }
+  _discoverData = data;
+  _discoverRuns = Array.isArray(runs) ? runs : [];
 
   _provider = _provider || data.selected || data.default;
-  el.innerHTML = '<div class="prov-grid">' + data.providers.map(p => {
-    const ready = p.configured
-      ? '<span class="badge t-good">ready</span>'
-      : '<span class="badge t-waiting">needs a key</span>';
-    return '<div class="prov-card ' + (p.key === _provider ? 'selected' : '') +
-      '" onclick="pickProvider(' + jsq(p.key) + ')">' +
-      '<div class="prov-head"><h3>' + escHtml(p.label) + '</h3>' + ready + '</div>' +
-      '<div class="blurb">' + escHtml(p.blurb) + '</div>' +
-      '<div class="row"><span class="k">Cost</span><span class="v">' +
-        escHtml(p.cost_note) + '</span></div>' +
-      '<div class="row"><span class="k">Free</span><span class="v">' +
-        escHtml(p.free_tier) + '</span></div>' +
-      (p.needs_key
-        ? '<div class="row"><span class="k">Setup</span><span class="v">' +
-          escHtml(p.env_keys.join(', ')) + ' in .env &middot; ' +
-          '<a href="' + safeHref(p.signup_url) + '" target="_blank" rel="noopener noreferrer">get a key</a>' +
-          '</span></div>'
-        : '') +
-      (p.caveat ? '<div class="caveat">' + escHtml(p.caveat) + '</div>' : '') +
-    '</div>';
-  }).join('') + '</div>';
+  renderDiscover();
 
   const running = data.running;
   // Reading sites can't be stopped part-way; only a discovery run can.
@@ -1063,11 +1101,117 @@ async function loadDiscoverProviders() {
   renderDiscoverResult(data.last_report, running);
 }
 
+// The list page or one source's page, from the data already loaded.
+function renderDiscover() {
+  const data = _discoverData;
+  if (!data) return;
+  const providers = data.providers || [];
+  const p = _discoverView ? providers.find(x => x.key === _discoverView) : null;
+  if (_discoverView && !p) _discoverView = null;
+  document.getElementById('discover-list').hidden = !!p;
+  document.getElementById('discover-detail').hidden = !p;
+  const head = document.getElementById('discover-head');
+  if (p) {
+    const page = sourceDetailPage(p);
+    head.innerHTML = page.head;
+    document.getElementById('discover-about').innerHTML = page.side;
+    return;
+  }
+  head.innerHTML = uiPageHead({
+    title: 'Discover',
+    sub: 'Find businesses matching your ICP. Pick a source, see what it will cost, then run it. '
+      + 'Nothing is called until you press the button.',
+    actions: '<button class="btn btn-primary" onclick="openSource(_provider)">Run discovery</button>',
+  });
+  document.getElementById('discover-summary').innerHTML =
+    discoverSummary(providers, _discoverRuns, (typeof _todayStats === 'object' && _todayStats) ? _todayStats.companies : undefined)
+    + (data.running ? uiBanner({tone: 'warning', iconName: 'flag', title: 'Running now',
+        body: 'Results land in Companies as they come in.',
+        actions: '<button class="btn btn-secondary btn-sm" onclick="openSource(_provider)">Open</button>'}) : '');
+  document.getElementById('discover-providers').innerHTML = sourcesTable(providers, _discoverRuns);
+}
+
+function openSource(key) {
+  _discoverView = key;
+  if (key && key !== _provider) { pickProvider(key); return; }
+  renderDiscover();
+  window.scrollTo(0, 0);
+}
+
+function closeSource() {
+  _discoverView = null;
+  renderDiscover();
+}
+
+// The most recent discovery run, for one source or any.
+function lastDiscoverRun(runs, key) {
+  return (runs || []).filter(r => r && r.stage === 'discover' && (!key || r.provider === key))
+    .sort((a, b) => String(b.started_at || '').localeCompare(String(a.started_at || '')))[0] || null;
+}
+
+function discoverSummary(providers, runs, companies) {
+  providers = providers || [];
+  const ready = providers.filter(p => p.configured).length;
+  const need = providers.length - ready;
+  const last = lastDiscoverRun(runs);
+  const label = last ? ((providers.find(p => p.key === last.provider) || {}).label || last.provider || '') : '';
+  const spent = (runs || []).filter(r => r && r.stage === 'discover')
+    .reduce((s, r) => s + (Number(r.cost_usd) || 0), 0);
+  return uiMetricStrip([
+    {label: 'Sources ready', value: ready, sub: need ? need + ' need a key' : 'all set up'},
+    {label: 'Companies found', value: (companies === undefined || companies === null) ? null : companies, sub: 'all time'},
+    {label: 'Last run', value: last ? (relTime(last.started_at) || '—') : 'never',
+      sub: last ? label + ' · ' + (Number(last.records) || 0) + ' records' : 'no discovery run yet'},
+    {label: 'Spent', value: '$' + spent.toFixed(2), sub: 'last 25 runs'},
+  ]);
+}
+
+function sourceBadge(p) {
+  return p.configured ? uiBadge('success', 'Ready', 'check') : uiBadge('warning', 'Needs a key');
+}
+
+function sourcesTable(providers, runs) {
+  const short = p => String(p.blurb || '').split('. ')[0].replace(/\.$/, '');
+  const columns = [
+    {key: 'label', header: 'Source', render: p => '<span class="ui-cell-main">' + escHtml(p.label) + '</span>'
+      + '<span class="ui-cell-sub disc-short">' + escHtml(short(p)) + '</span>'},
+    {key: 'status', header: '', render: sourceBadge},
+    {key: 'cost', header: 'Cost', render: p => '<span class="disc-wrap">' + uiDash(p.cost_note) + '</span>'},
+    {key: 'free', header: 'Free tier', render: p => '<span class="disc-wrap muted">' + uiDash(p.free_tier) + '</span>'},
+    {key: 'last', header: 'Last run', align: 'right', render: p => {
+      const r = lastDiscoverRun(runs, p.key);
+      return '<span class="muted">' + (r ? (relTime(r.started_at) || '—') : 'never') + '</span>';
+    }},
+  ];
+  return uiTable({columns, rows: providers || [], rowKey: p => p.key,
+    onRow: p => 'openSource(' + jsq(p.key) + ')', empty: 'No discovery sources available'});
+}
+
+// One source: its head, and what sits beside the run form.
+function sourceDetailPage(p) {
+  const head = uiPageHead({
+    crumbs: [{label: 'Discover', js: 'closeSource()'}, {label: p.label}],
+    title: p.label, sub: p.blurb, actions: sourceBadge(p),
+  });
+  const keys = (p.env_keys || []).length
+    ? '<code>' + escHtml(p.env_keys.join(', ')) + '</code> in .env'
+      + (safeHref(p.signup_url) ? ' · <a href="' + safeHref(p.signup_url) + '" target="_blank" rel="noopener noreferrer">get a key</a>' : '')
+    : 'None';
+  const row = (k, v) => '<div><dt>' + escHtml(k) + '</dt><dd>' + v + '</dd></div>';
+  const side = uiCard({title: 'About this source', body: '<dl class="ui-details">'
+      + row('Cost', uiDash(p.cost_note)) + row('Free tier', uiDash(p.free_tier))
+      + row('Setup', keys) + row('Status', p.configured ? 'Ready to run' : 'Needs a key before it can run') + '</dl>'})
+    + (p.caveat ? uiBanner({tone: 'warning', iconName: 'flag', title: 'Worth knowing', body: p.caveat}) : '');
+  return {head, side};
+}
+
 function pickProvider(key) {
   _provider = key;
   document.getElementById('disc-run').disabled = true;
   document.getElementById('disc-run').textContent = 'Estimate first';
   document.getElementById('discover-estimate').innerHTML = '';
+  const chip = document.getElementById('disc-estimate-chip');
+  if (chip) chip.textContent = 'Estimate before you run';
   loadDiscoverProviders();
 }
 
@@ -1084,38 +1228,48 @@ function discoverBody() {
   };
 }
 
+// The priced plan: amount, query count, cap check and the queries themselves.
+function estimateHtml(data, cap) {
+  const cost = Number(data.estimated_cost) || 0;
+  const n = Number(data.query_count) || 0;
+  const queries = Array.isArray(data.queries) ? data.queries : [];
+  cap = Number(cap) || 0;
+  const over = cost > cap;
+  return '<div class="estimate-box">'
+    + '<div class="amount ' + (data.free ? 'free' : 'paid') + '">' + (data.free ? 'Free' : '$' + cost.toFixed(4)) + '</div>'
+    + '<div class="estimate-sub">' + n + ' quer' + (n === 1 ? 'y' : 'ies')
+      + (data.free ? '' : ' · cap is $' + cap.toFixed(2)) + '</div>'
+    + (over ? uiBanner({tone: 'danger', iconName: 'alert', title: 'Over your cap', body: 'Raise the cap or narrow the search.'}) : '')
+    + (queries.length ? '<div class="query-list">' + queries.slice(0, 40).map(escHtml).join('<br>')
+      + (queries.length > 40 ? '<br>… and ' + (queries.length - 40) + ' more' : '') + '</div>' : '')
+    + '</div>';
+}
+
 async function estimateDiscovery() {
   const el = document.getElementById('discover-estimate');
-  el.innerHTML = '<p class="muted" style="font-size:13px">Pricing it…</p>';
+  el.innerHTML = '<p class="muted" style="font-size:12px">Pricing it…</p>';
   const data = await api('/api/discover/estimate', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(discoverBody()),
   });
   if (!data || data.error) {
-    el.innerHTML = '<div class="test-result error">' +
-      escHtml((data && data.error) || 'Could not estimate.') + '</div>';
+    el.innerHTML = uiBanner({tone: 'danger', iconName: 'alert', title: 'Could not estimate',
+      body: (data && data.error) || 'The server did not answer.'});
     return;
   }
 
   const cap = discoverBody().max_spend;
-  const over = data.estimated_cost > cap;
-  el.innerHTML = '<div class="estimate-box">' +
-    '<div class="amount ' + (data.free ? 'free' : 'paid') + '">' +
-      (data.free ? 'Free' : '$' + data.estimated_cost.toFixed(4)) + '</div>' +
-    '<div class="muted" style="font-size:13px;margin-top:2px">' +
-      data.query_count + ' quer' + (data.query_count === 1 ? 'y' : 'ies') +
-      (data.free ? '' : ' &middot; cap is $' + cap.toFixed(2)) + '</div>' +
-    (over ? '<div class="test-result error" style="margin-top:12px">' +
-      'Over your cap. Raise the cap or narrow the search.</div>' : '') +
-    '<div class="query-list">' +
-      data.queries.slice(0, 40).map(escHtml).join('<br>') +
-      (data.queries.length > 40 ? '<br>… and ' + (data.queries.length - 40) + ' more' : '') +
-    '</div></div>';
+  const cost = Number(data.estimated_cost) || 0;
+  const over = cost > cap;
+  el.innerHTML = estimateHtml(data, cap);
+  const chip = document.getElementById('disc-estimate-chip');
+  if (chip) chip.textContent = data.free ? 'Free · ' + (data.query_count || 0) + ' queries'
+    : 'Estimated $' + cost.toFixed(2) + ' for ' + (data.query_count || 0) + ' queries';
 
   const btn = document.getElementById('disc-run');
   btn.disabled = over;
   btn.textContent = over ? 'Over cap'
-    : (data.free ? 'Run — free' : 'Run — spend up to $' + data.estimated_cost.toFixed(2));
+    : (data.free ? 'Run — free' : 'Run — spend up to $' + cost.toFixed(2));
 }
 
 async function runDiscovery() {
@@ -1144,16 +1298,22 @@ async function stopDiscovery() {
 
 // Companies found but not looked at: reading their sites is free and
 // model-free, and it is what makes an email specific.
+function profileCard(pending, running) {
+  if (!pending) return '';
+  return uiBanner({
+    iconName: 'flag',
+    title: pending + ' compan' + (pending === 1 ? 'y' : 'ies') + ' not looked at yet',
+    body: 'Free, no account needed. Sellbird reads each site for who their agency is, what they are missing, '
+      + 'and whether they run ads. Up to 200 per run.',
+    actions: '<button class="btn btn-primary btn-sm" onclick="runProfile(this)"' + (running ? ' disabled' : '') + '>'
+      + (running ? 'Busy…' : 'Read their sites') + '</button>',
+  });
+}
+
 function renderProfileCard(pending, running) {
   const el = document.getElementById('discover-profile');
   if (!el) return;
-  if (!pending) { el.innerHTML = ''; return; }
-  el.innerHTML = '<div class="subhead">Read websites</div><div class="card"><div class="queue-item good" style="padding:0;border:0;box-shadow:none">' +
-    '<div class="qtext"><div class="qtitle">' + pending + ' compan' + (pending === 1 ? 'y' : 'ies') +
-    ' not looked at yet</div><div class="qdetail">Free, no account needed. Sellbird reads each site for ' +
-    'who their agency is, what they are missing, and whether they run ads. Up to 200 per run.</div></div>' +
-    '<button class="btn btn-primary btn-sm" onclick="runProfile(this)"' + (running ? ' disabled' : '') + '>' +
-    (running ? 'Busy…' : 'Read their sites') + '</button></div></div>';
+  el.innerHTML = profileCard(pending, running);
 }
 
 async function runProfile(btn) {
@@ -1172,42 +1332,36 @@ async function runProfile(btn) {
 function renderDiscoverResult(report, running) {
   const el = document.getElementById('discover-result');
   if (running) {
-    el.innerHTML = '<div class="card"><h2>Running…</h2>' +
-      '<p class="muted" style="font-size:13px">Sellbird is working through the ' +
-      'queries. Results land in Companies, and the run log is on Today.</p></div>';
+    el.innerHTML = uiCard({title: 'Running…', body: '<p class="sig-blurb">Sellbird is working through the '
+      + 'queries. Results land in Companies, and the run log is on Today.</p>'});
     return;
   }
-  if (!report) { el.innerHTML = ''; return; }
-
-  const stat = (label, value, tone) =>
-    '<div class="stat-card"><div class="label">' + label + '</div>' +
-    '<div class="value"' + (tone ? ' style="color:var(--' + tone + ')"' : '') + '>' +
-    value + '</div></div>';
-
+  if (!report) {
+    el.innerHTML = uiCard({title: 'Last run', body: '<p class="sig-blurb">Nothing run since the dashboard started. '
+      + 'The full run log is on Today.</p>'});
+    return;
+  }
+  const money = v => v ? '$' + (Number(v) || 0).toFixed(4) : 'Free';
+  const stopped = report.stopped ? uiBanner({tone: 'danger', iconName: 'alert', title: 'Stopped early', body: report.stopped}) : '';
   if (report.profiled_companies !== undefined && report.new_companies === undefined) {
-    el.innerHTML = '<div class="subhead">Last run</div><div class="stats-grid">' +
-      stat('Websites read', report.profiled_companies || 0, 'accent') +
-      stat('Facts recorded', report.profile_observations || 0) +
-      stat('Cost', 'free') + '</div>' +
-      (report.stopped ? '<div class="test-result error" style="margin-top:14px">Stopped early: ' + escHtml(report.stopped) + '</div>' : '');
+    el.innerHTML = uiCard({title: 'Last run', cls: 'disc-last', body: uiMetricStrip([
+      {label: 'Websites read', value: report.profiled_companies || 0},
+      {label: 'Facts recorded', value: report.profile_observations || 0},
+      {label: 'Cost', value: 'Free'}]) + stopped});
     return;
   }
-  el.innerHTML = '<div class="subhead">Last run</div>' +
-    '<div class="stats-grid">' +
-      stat('New companies', report.new_companies || 0, 'accent') +
-      stat('Already known', report.known_companies || 0) +
-      stat('Observations', report.observations || 0) +
-      stat('Filtered as junk', report.junk || 0) +
-      (report.profiled_companies ? stat('Websites read', report.profiled_companies) : '') +
-      stat('Actual cost', report.actual_cost ? '$' + report.actual_cost.toFixed(4) : 'free') +
-    '</div>' +
-    (report.stopped ? '<div class="test-result error" style="margin-top:14px">' +
-      'Stopped early: ' + escHtml(report.stopped) + '</div>' : '') +
-    ((report.errors || []).length
-      ? '<div class="card" style="margin-top:14px"><h2>Problems</h2>' +
-        (report.errors || []).slice(0, 8).map(e =>
-          '<div class="check-help">' + escHtml(e) + '</div>').join('') + '</div>'
-      : '');
+  const items = [
+    {label: 'New companies', value: report.new_companies || 0},
+    {label: 'Already known', value: report.known_companies || 0},
+    {label: 'Observations', value: report.observations || 0},
+    {label: 'Filtered as junk', value: report.junk || 0}];
+  if (report.profiled_companies) items.push({label: 'Websites read', value: report.profiled_companies});
+  items.push({label: 'Actual cost', value: money(report.actual_cost)});
+  el.innerHTML = uiCard({title: 'Last run', cls: 'disc-last', body: uiMetricStrip(items) + stopped
+    + ((report.errors || []).length
+      ? '<div class="disc-problems"><div class="ui-card__title">Problems</div>'
+        + (report.errors || []).slice(0, 8).map(e => '<div class="check-help">' + escHtml(e) + '</div>').join('') + '</div>'
+      : '')});
 }
 
 // ── Cohort builder: a prospect list is a query ──
@@ -1226,46 +1380,38 @@ function renderCohortBuilder() {
     .filter(s => s.status === 'confirmed');
 
   if (!confirmed.length) {
-    el.innerHTML = '<p class="muted" style="font-size:13px">' +
-      'Confirm some signals above and they become the building blocks here.</p>';
+    el.innerHTML = uiCard({body: uiEmpty('No confirmed signals yet',
+      'Confirm some signals on the other tabs and they become the building blocks here.')});
     document.getElementById('cohort-result').innerHTML = '';
     return;
   }
 
-  const col = (title, key, hint) =>
-    '<div><div class="subhead" style="margin-top:0">' + title +
-      ' <span class="muted" style="font-weight:400;text-transform:none;letter-spacing:0">' +
-      hint + '</span></div><div class="cohort-grid">' +
-    confirmed.map(s =>
+  const col = (title, key, hint) => uiCard({title, action: '<span>' + escHtml(hint) + '</span>',
+    body: '<div class="cohort-grid">' + confirmed.map(s =>
       '<label class="cohort-pick"><input type="checkbox" ' +
         (_cohort[key].has(s.code) ? 'checked ' : '') +
         'onchange="toggleCohort(\'' + key + '\',' + jsq(s.code) + ',this.checked)">' +
-        '<span>' + escHtml(s.label || s.code) + '</span>' +
-        '<span class="n">' + (s.companies || 0) + '</span></label>'
-    ).join('') + '</div></div>';
+        '<span class="cohort-name">' + escHtml(s.label || s.code) + '</span>' +
+        '<span class="n">' + (Number(s.companies) || 0) + '</span></label>'
+    ).join('') + '</div>'});
 
   // Numeric signals (ranks, ratings) take a range: "organic rank 11-30".
   const numeric = confirmed.filter(s => s.value_type === 'num');
   const bound = (code, side) => {
     const v = (_cohort.ranges[code] || {})[side];
-    return '<input type="number" class="cohort-bound" placeholder="' + side + '" ' +
+    return '<input type="number" class="form-input cohort-bound" placeholder="' + side + '" ' +
       'value="' + (v === undefined || v === null ? '' : escHtml(String(v))) + '" ' +
       'aria-label="' + escHtml(code) + ' ' + side + '" ' +
       'onchange="setCohortRange(' + jsq(code) + ',' + jsq(side) + ',this.value)">';
   };
-  const rangeCol = numeric.length ?
-    '<div style="height:18px"></div><div><div class="subhead" style="margin-top:0">In range ' +
-      '<span class="muted" style="font-weight:400;text-transform:none;letter-spacing:0">' +
-      '&mdash; e.g. organic rank 11 to 30; leave a side blank for no limit</span></div>' +
-      '<div class="cohort-grid">' +
-      numeric.map(s =>
-        '<div class="cohort-pick cohort-range"><span>' + escHtml(s.label || s.code) + '</span>' +
-          bound(s.code, 'min') + '<span class="muted">to</span>' + bound(s.code, 'max') + '</div>'
-      ).join('') + '</div></div>' : '';
+  const rangeCol = numeric.length ? uiCard({title: 'In range', action: '<span>e.g. organic rank 11 to 30; leave a side blank for no limit</span>',
+    body: '<div class="cohort-ranges">' + numeric.map(s =>
+      '<div class="cohort-range"><span class="cohort-name">' + escHtml(s.label || s.code) + '</span>' +
+        bound(s.code, 'min') + '<span class="muted">to</span>' + bound(s.code, 'max') + '</div>'
+    ).join('') + '</div>'}) : '';
 
-  el.innerHTML = col('Must have', 'require', '&mdash; every company in the cohort carries all of these') +
-    '<div style="height:18px"></div>' +
-    col('Must not have', 'exclude', '&mdash; disqualifiers') + rangeCol;
+  el.innerHTML = col('Must have', 'require', 'every company in the cohort carries all of these') +
+    col('Must not have', 'exclude', 'disqualifiers') + rangeCol;
 }
 
 function setCohortRange(code, side, value) {
@@ -1296,7 +1442,7 @@ async function runCohort() {
   const ranges = _cohortRanges();
   if (!require.length && !ranges.length) { el.innerHTML = ''; return; }
   // Remove the prior export button as soon as its criteria become stale.
-  el.innerHTML = '<p class="muted">Loading cohort…</p>';
+  el.innerHTML = '<p class="muted cohort-loading">Loading cohort…</p>';
 
   const data = await api('/api/cohort', {
     method: 'POST',
@@ -1310,35 +1456,33 @@ async function runCohort() {
     return;
   }
 
-  let html = '<div style="border-top:1px solid var(--border);margin-top:20px;padding-top:20px">' +
+  let html = '<section class="ui-card cohort-card"><div class="ui-card__head"><h3 class="ui-card__title">Matching companies</h3></div>' +
     '<div class="cohort-size">' + data.size + '</div>' +
-    '<div class="muted" style="font-size:13px;margin-top:2px">compan' +
+    '<div class="cohort-size-sub">compan' +
       (data.size === 1 ? 'y matches' : 'ies match') + ' this cohort right now</div>';
 
   if (data.companies && data.companies.length) {
-    html += '<div class="table-card" style="margin-top:16px"><table><thead><tr>' +
+    html += '<div class="ui-table-wrap"><table class="ui-table"><thead><tr>' +
       '<th>Company</th><th>Domain</th><th>Industry</th><th>Location</th>' +
       '</tr></thead><tbody>' +
       data.companies.map(c =>
-        '<tr><td>' + escHtml(c.name) + '</td><td class="muted">' + escHtml(c.domain) + '</td>' +
-        '<td class="muted">' + escHtml(c.industry) + '</td>' +
-        '<td class="muted">' + escHtml(c.location) + '</td></tr>'
+        '<tr><td class="ui-strong">' + (escHtml(c.name) || '—') + '</td><td>' + (escHtml(c.domain) || '—') + '</td>' +
+        '<td>' + (escHtml(c.industry) || '—') + '</td>' +
+        '<td>' + (escHtml(c.location) || '—') + '</td></tr>'
       ).join('') + '</tbody></table></div>';
 
     const first = data.offset + 1, last = data.offset + data.companies.length;
     const hasPrev = data.offset > 0, hasNext = last < data.size;
-    html += '<div style="display:flex;align-items:center;gap:8px;margin-top:10px">' +
-      '<span class="muted" style="font-size:12px">Showing ' + first + '&ndash;' + last +
-        ' of ' + data.size + '</span>' +
-      '<span style="flex:1"></span>' +
-      '<button class="btn btn-secondary btn-sm" onclick="pageCohort(-1)"' +
-        (hasPrev ? '' : ' disabled') + '>Prev</button>' +
-      '<button class="btn btn-secondary btn-sm" onclick="pageCohort(1)"' +
+    html += '<div class="ui-pager"><span>Showing ' + first + '&ndash;' + last +
+        ' of ' + data.size + '</span><div class="ui-pager__btns">' +
+      '<button class="btn btn-sm" onclick="pageCohort(-1)"' +
+        (hasPrev ? '' : ' disabled') + '>Previous</button>' +
+      '<button class="btn btn-sm" onclick="pageCohort(1)"' +
         (hasNext ? '' : ' disabled') + '>Next</button>' +
       '<button class="btn btn-secondary btn-sm" onclick="exportCohort(this)">Export CSV</button>' +
-      '</div>';
+      '</div></div>';
   } else if (data.size === 0) {
-    html += '<p class="muted" style="font-size:13px;margin-top:12px">' +
+    html += '<p class="sig-blurb">' +
       'No company carries all of those yet. Either loosen the cohort, or run ' +
       'prospecting to collect more.</p>';
   } else if (_cohortOffset > 0) {
@@ -1346,7 +1490,7 @@ async function runCohort() {
     _cohortOffset = 0;
     return runCohort();
   }
-  el.innerHTML = html + '</div>';
+  el.innerHTML = html + '</section>';
 }
 
 function _cohortRanges() {

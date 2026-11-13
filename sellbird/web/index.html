@@ -157,44 +157,39 @@
   <div id="company-body" class="company-body"><p class="desc">Loading...</p></div>
 </div>
 
-<div id="signals" class="section">
-  <div class="section-head">
-    <div>
-      <h2>Signals</h2>
-      <p>Sellbird proposes what it knows how to look for. You decide what actually
-         defines a good prospect &mdash; nothing is collected until you confirm it.</p>
-    </div>
-  </div>
+<div id="signals" class="section"><div class="ui-page">
+  <div class="ui-pagehead"><div class="ui-pagehead__text">
+    <h2 class="ui-pagehead__title">Signals</h2>
+    <div class="ui-pagehead__sub">Sellbird proposes what it knows how to look for. You decide what actually
+      defines a good prospect. Nothing is collected until you confirm it.</div>
+  </div></div>
   <div id="signals-summary"></div>
+  <div id="signals-tabs"></div>
   <div id="signals-groups"></div>
-
-  <div class="subhead">Cohort builder</div>
-  <div class="card">
-    <p class="lede">A prospect list is a query, not a file. Pick the signals a
-      good prospect must have &mdash; and any that disqualify them &mdash; and see
-      how many companies match right now.</p>
-    <div id="cohort-builder"></div>
+  <div id="signals-cohort" class="ui-stack" hidden>
+    <section class="ui-card">
+      <div class="ui-card__head"><h3 class="ui-card__title">Cohort builder</h3></div>
+      <p class="sig-blurb">A prospect list is a query, not a file. Pick the signals a good prospect must
+        have, plus any that disqualify them, and see how many companies match right now.</p>
+    </section>
+    <div id="cohort-builder" class="ui-stack"></div>
     <div id="cohort-result"></div>
   </div>
-</div>
+</div></div>
 
 <!-- Discover: the only stage that spends money -->
-<div id="discover" class="section">
-  <div class="section-head">
-    <div>
-      <h2>Discover</h2>
-      <p>Find businesses matching your ICP. Pick a source, see what it will cost,
-         then run it &mdash; nothing is called until you press the button.</p>
-    </div>
-  </div>
+<div id="discover" class="section"><div class="ui-page">
+  <div id="discover-head"></div>
   <div id="discover-profile"></div>
-
-  <div class="subhead">Source</div>
-  <div id="discover-providers"></div>
-
-  <div class="subhead">Run</div>
-  <div class="card">
-    <div class="form-row" style="margin-bottom:4px">
+  <div id="discover-list" class="ui-stack">
+    <div id="discover-summary"></div>
+    <div id="discover-providers"></div>
+  </div>
+  <div id="discover-detail" class="disc-detail" hidden>
+    <section class="ui-card disc-run-card">
+      <div class="ui-card__head"><h3 class="ui-card__title">Run</h3>
+        <div class="ui-card__action" id="disc-estimate-chip">Estimate before you run</div></div>
+    <div class="disc-form">
       <div class="form-group">
         <label class="form-label" for="disc-preset">Look for</label>
         <select class="form-input" id="disc-preset" title="Startup and hiring searches, run by web search (TinyFish, Serper or DataForSEO SERP). YC startups and Accelerator startups: companies whose own site says Y Combinator or another accelerator (Techstars, Antler, Entrepreneur First and others) backed them; turn on YC_BACKED or ACCELERATOR to tag them. Recently funded: companies announcing their own raise in the last 18 months; turn on FUNDING_ROUND to record the round, amount and date. Hiring for your roles: companies whose own careers pages list one of your hiring_signals roles (or ICP titles); turn on HIRING_ROLE and profiling reads the job board their site links to.">
@@ -205,7 +200,7 @@
           <option value="hiring">Companies hiring for your roles</option>
         </select>
       </div>
-      <div class="form-group" style="flex:2">
+      <div class="form-group disc-cities">
         <label class="form-label" for="disc-cities">Cities</label>
         <input class="form-input" id="disc-cities" placeholder="From your ICP, or override: Denver, CO; Boulder, CO">
       </div>
@@ -218,21 +213,21 @@
         <input class="form-input" id="disc-depth" type="number" value="30" min="10" max="100" step="10">
       </div>
       <div class="form-group">
-        <label class="form-label" for="disc-cap">Spend cap ($)</label>
+        <label class="form-label" for="disc-cap">Spend cap (USD)</label>
         <input class="form-input" id="disc-cap" type="number" value="1.00" min="0" step="0.25">
       </div>
     </div>
     <div id="discover-estimate"></div>
-    <div class="btn-group">
-      <button class="btn btn-secondary" onclick="estimateDiscovery()">Estimate cost</button>
-      <button class="btn btn-primary" id="disc-run" onclick="runDiscovery()" disabled>
-        Estimate first</button>
-      <button class="btn btn-danger" id="disc-stop" onclick="stopDiscovery()" style="display:none">
-        Stop</button>
-    </div>
+      <div class="disc-actions">
+        <button class="btn btn-secondary btn-sm" onclick="estimateDiscovery()">Estimate cost</button>
+        <button class="btn btn-primary btn-sm" id="disc-run" onclick="runDiscovery()" disabled>Estimate first</button>
+        <button class="btn btn-danger btn-sm" id="disc-stop" onclick="stopDiscovery()" style="display:none">Stop</button>
+      </div>
+    </section>
+    <div id="discover-result"></div>
+    <div id="discover-about" class="ui-stack"></div>
   </div>
-  <div id="discover-result"></div>
-</div>
+</div></div>
 
 <!-- Companies -->
 <div id="companies" class="section">
