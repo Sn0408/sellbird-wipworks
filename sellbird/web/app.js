@@ -309,6 +309,140 @@ async function api(path, opts) {
   }
 }
 
+// ── UI kit: the redesign's shared parts ──
+// Pure functions: data in, HTML string out. Every text value goes through
+// escHtml and every link through safeHref; `js` arguments are inline-handler
+// source built with jsq, like the rest of this file.
+
+function uiDash(v) {
+  return (v === null || v === undefined || v === '') ? '<span class="ui-dash">—</span>' : escHtml(v);
+}
+
+function uiBadge(tone, text, iconName = '') {
+  const t = ['success', 'danger', 'warning', 'info', 'neutral'].includes(tone) ? tone : 'neutral';
+  return '<span class="ui-badge is-' + t + '">' + escHtml(text) + (iconName ? icon(iconName) : '') + '</span>';
+}
+
+function uiPageHead({title, sub = '', crumbs = [], actions = ''}) {
+  const trail = crumbs.length
+    ? '<nav class="ui-crumbs" aria-label="Breadcrumb">' + crumbs.map(c => c.js
+        ? '<a href="#" onclick="' + c.js + ';return false">' + escHtml(c.label) + '</a>'
+        : '<span>' + escHtml(c.label) + '</span>').join(icon('chevron', 'ui-crumbs__sep')) + '</nav>'
+    : '';
+  return '<div class="ui-pagehead"><div class="ui-pagehead__text">' + trail
+    + '<h2 class="ui-pagehead__title">' + escHtml(title) + '</h2>'
+    + (sub ? '<div class="ui-pagehead__sub">' + escHtml(sub) + '</div>' : '') + '</div>'
+    + (actions ? '<div class="ui-pagehead__actions">' + actions + '</div>' : '') + '</div>';
+}
+
+// A card. `title` is text; `action` and `body` are HTML the caller built.
+function uiCard({title = '', action = '', body = '', cls = ''}) {
+  const head = (title || action)
+    ? '<div class="ui-card__head">' + (title ? '<h3 class="ui-card__title">' + escHtml(title) + '</h3>' : '<span></span>')
+      + (action ? '<div class="ui-card__action">' + action + '</div>' : '') + '</div>'
+    : '';
+  return '<section class="ui-card' + (cls ? ' ' + cls : '') + '">' + head + body + '</section>';
+}
+
+function uiMetricStrip(items) {
+  return '<div class="ui-metrics">' + items.map(m =>
+    '<div class="ui-metric"><div class="ui-metric__label">' + escHtml(m.label)
+    + (m.delta ? ' ' + uiBadge('success', m.delta) : '') + '</div>'
+    + '<div class="ui-metric__value">' + uiDash(m.value) + '</div>'
+    + (m.sub ? '<div class="ui-metric__sub">' + escHtml(m.sub) + '</div>' : '')
+    + '</div>').join('') + '</div>';
+}
+
+function uiTabs(items, activeKey, onSelect) {
+  return '<div class="ui-tabs" role="tablist">' + items.map(t =>
+    '<button type="button" class="ui-tab" role="tab" aria-selected="' + (t.key === activeKey) + '" onclick="'
+    + onSelect(t.key) + '">' + escHtml(t.label)
+    + (t.count !== undefined && t.count !== null ? '<span class="ui-tab__count">' + escHtml(t.count) + '</span>' : '')
+    + '</button>').join('') + '</div>';
+}
+
+function uiChips(items, onToggle) {
+  return '<div class="ui-chips">' + items.map(c =>
+    '<button type="button" class="ui-chip" aria-pressed="' + !!c.on + '" onclick="' + onToggle(c.key) + '">'
+    + icon(c.on ? 'check' : 'plus') + escHtml(c.label) + '</button>').join('') + '</div>';
+}
+
+function uiSwitch({id, checked, label = '', disabled = false, onChange}) {
+  return '<label class="ui-switch"' + (id ? ' for="' + escHtml(id) + '"' : '') + '>'
+    + (label ? '<span>' + escHtml(label) + '</span>' : '')
+    + '<input type="checkbox" role="switch"' + (id ? ' id="' + escHtml(id) + '"' : '')
+    + (checked ? ' checked' : '') + (disabled ? ' disabled' : '')
+    + ' onchange="' + onChange + '"></label>';
+}
+
+function uiTable({columns, rows, rowKey = null, onRow = null, empty = 'Nothing here yet', visible = null}) {
+  const cols = visible ? columns.filter(c => visible.includes(c.key)) : columns;
+  const align = c => (c.align && c.align !== 'left') ? ' class="' + c.align + '"' : '';
+  const head = '<thead><tr>' + cols.map(c => '<th' + align(c) + '>' + escHtml(c.header) + '</th>').join('') + '</tr></thead>';
+  const body = rows.length
+    ? rows.map((r, i) => '<tr' + (rowKey ? ' data-key="' + escHtml(rowKey(r, i)) + '"' : '')
+        + (onRow ? ' class="ui-row-link" tabindex="0" onclick="' + onRow(r, i) + '"' : '') + '>'
+        + cols.map(c => '<td' + align(c) + '>' + (c.render ? c.render(r, i) : uiDash(r[c.key])) + '</td>').join('')
+        + '</tr>').join('')
+    : '<tr class="ui-empty-row"><td colspan="' + cols.length + '">' + escHtml(empty) + '</td></tr>';
+  return '<div class="ui-table-wrap"><table class="ui-table">' + head + '<tbody>' + body + '</tbody></table></div>';
+}
+
+function uiPager({total, offset, size, onPage}) {
+  const prev = offset <= 0, next = offset + size >= total;
+  return '<div class="ui-pager"><span>' + escHtml(total) + ' results</span><div class="ui-pager__btns">'
+    + '<button type="button" class="btn btn-sm"' + (prev ? ' disabled' : '') + ' onclick="' + onPage(Math.max(0, offset - size)) + '">Previous</button>'
+    + '<button type="button" class="btn btn-sm"' + (next ? ' disabled' : '') + ' onclick="' + onPage(offset + size) + '">Next</button>'
+    + '</div></div>';
+}
+
+function uiRowMenu(items) {
+  return '<details class="ui-menu" onclick="event.stopPropagation()"><summary aria-label="More actions">⋯</summary>'
+    + '<div class="ui-menu__list">' + items.map(m =>
+      '<button type="button"' + (m.danger ? ' class="danger"' : '') + ' onclick="this.closest(\'details\').open=false;' + m.js + '">'
+      + escHtml(m.label) + '</button>').join('') + '</div></details>';
+}
+
+function uiEmpty(title, desc = '', actionHtml = '') {
+  return '<div class="ui-empty"><div class="ui-empty__title">' + escHtml(title) + '</div>'
+    + (desc ? '<div class="ui-empty__desc">' + escHtml(desc) + '</div>' : '') + actionHtml + '</div>';
+}
+
+// A full-width notice: an icon, a bold title, a line of text, actions on the right.
+function uiBanner({title = '', body = '', actions = '', tone = '', iconName = 'arrow'}) {
+  return '<div class="ui-banner' + (tone ? ' is-' + tone : '') + '">' + icon(iconName)
+    + '<div class="ui-banner__text">' + (title ? '<div class="ui-banner__title">' + escHtml(title) + '</div>' : '')
+    + (body ? '<div>' + escHtml(body) + '</div>' : '') + '</div>'
+    + (actions ? '<div class="ui-banner__actions">' + actions + '</div>' : '') + '</div>';
+}
+
+// "Edit columns": a checkbox per column; onChange gets the JS for the new key list.
+function uiColumns(tableKey, columns, visible, onChange) {
+  return '<details class="ui-menu ui-colpick"><summary class="btn btn-sm">Edit columns</summary><div class="ui-menu__list">'
+    + columns.map(c => '<label class="check-line"><input type="checkbox" value="' + escHtml(c.key) + '"'
+      + (visible.includes(c.key) ? ' checked' : '')
+      + ' onchange="' + onChange + '">' + escHtml(c.header || c.key) + '</label>').join('')
+    + '</div></details>';
+}
+
+function loadColumns(tableKey, defaults) {
+  try {
+    const v = JSON.parse(localStorage.getItem('sellbird-cols-' + tableKey) || 'null');
+    return Array.isArray(v) && v.length ? v : defaults;
+  } catch (e) { return defaults; }
+}
+
+function saveColumns(tableKey, keys) {
+  try { localStorage.setItem('sellbird-cols-' + tableKey, JSON.stringify(keys)); } catch (e) { /* private window */ }
+}
+
+function pageSlice(rows, offset, size) {
+  const last = Math.max(0, rows.length - 1);
+  const o = Math.min(Math.max(0, offset), last);
+  const start = Math.floor(o / size) * size;
+  return rows.slice(start, start + size);
+}
+
 // ── Locked: no token, a wrong one, or the server can't load its own ──
 
 let _locked = false;
@@ -432,14 +566,17 @@ function loadCurrentTab() {
 
 // ── Today: what needs a human ──
 
+let _todayItems = 0;
+let _todayLive = null;
+
 async function loadToday() {
   const data = await api('/api/today');
   const el = document.getElementById('today-queue');
   if (!data) { el.innerHTML = offlineState(); return; }
   if (data.error) {
     // A failed check must never read as "Nothing needs you".
-    el.innerHTML = emptyState(icon('alert'), 'Couldn\'t check what needs you',
-      'The dashboard hit an error reading Sellbird\'s data: ' + escHtml(data.error));
+    el.innerHTML = uiBanner({tone: 'danger', iconName: 'alert', title: 'Couldn\'t check what needs you',
+      body: 'The dashboard hit an error reading Sellbird\'s data: ' + data.error});
     return;
   }
 
@@ -450,33 +587,63 @@ async function loadToday() {
   _todayStats = data.stats || {};
   renderFigures(_todayStats);
 
-  const items = data.items || [];
-  if (!items.length) {
-    el.innerHTML = '<div class="queue-clear">' +
-      '<div class="queue-icon">' + icon('check') + '</div><div>' +
-      '<div class="qtitle">Nothing needs you</div>' +
-      '<div class="qdetail">Sellbird has everything it needs. Anything that requires a ' +
-      'decision — an email to approve, a signal to confirm — shows up here.</div>' +
-      '</div></div>';
-    return;
-  }
+  const items = (data.items || []).filter(i => i.tone !== 'good');
+  _todayItems = items.length;
+  el.innerHTML = todayNeedsYou(items);
+  renderTodayNext();
+}
 
-  const glyph = {bad: 'alert', warn: 'flag', good: 'check'};
-  el.innerHTML = '<div class="queue">' + items.map(it => {
-    const tone = escHtml(it.tone || 'warn');
-    return '<div class="queue-item ' + tone + '">' +
-      '<div class="queue-icon">' + icon(glyph[it.tone] || 'flag') + '</div>' +
-      '<div class="qtext">' +
-        '<div class="qtitle">' + escHtml(it.title) + '</div>' +
-        '<div class="qdetail">' + escHtml(it.detail) + '</div>' +
-      '</div>' +
-      '<button class="btn btn-secondary btn-sm" onclick="goTab(' + jsq(it.tab) + ')">' +
-        escHtml(it.action) + icon('arrow') + '</button>' +
-    '</div>';
-  }).join('') + '</div>';
+// Each thing waiting on you is one banner row with its own way in.
+function todayNeedsYou(items) {
+  if (!items || !items.length) return '';
+  return items.map(it => uiBanner({
+    tone: it.tone === 'bad' ? 'danger' : 'warning', iconName: it.tone === 'bad' ? 'alert' : 'flag',
+    title: it.title, body: it.detail,
+    actions: '<button class="btn btn-secondary btn-sm" onclick="goTab(' + jsq(it.tab) + ')">'
+      + escHtml(it.action) + icon('arrow') + '</button>',
+  })).join('');
+}
+
+// "Next": the one thing to do now, and whether anything needs you.
+function todayNext(live, itemsCount) {
+  const quiet = itemsCount ? '' : 'Nothing needs you right now. Anything that requires a decision '
+    + '(an email to approve, a signal to confirm) shows up here.';
+  if (!live || !live.next) {
+    return quiet ? uiBanner({tone: 'success', iconName: 'check', title: 'Nothing needs you', body: quiet.replace('Nothing needs you right now. ', '')}) : '';
+  }
+  return uiBanner({
+    title: 'Next · ' + live.next, body: quiet,
+    actions: live.next_tab ? '<button class="btn btn-primary btn-sm" onclick="goTab(' + jsq(live.next_tab) + ')">Go</button>' : '',
+  });
+}
+
+function renderTodayNext() {
+  const el = document.getElementById('today-next');
+  if (el) el.innerHTML = todayNext(_todayLive, _todayItems);
 }
 
 // ── Live status: the "what's happening?" answer, kept on screen ──
+
+function stepBadge(state) {
+  if (state === 'done') return uiBadge('success', 'Done', 'check');
+  if (state === 'running') return uiBadge('info', 'In progress');
+  if (state === 'partial') return uiBadge('info', 'Partly done');
+  return uiBadge('neutral', 'Waiting');
+}
+
+function pipelineTable(live) {
+  const steps = (live && live.steps) || [];
+  return uiTable({
+    columns: [
+      {key: 'label', header: 'Step', render: s => '<span class="ui-cell-main">' + escHtml(s.label) + '</span>'
+        + (s.detail ? '<span class="ui-cell-sub">' + escHtml(s.detail) + '</span>' : '')},
+      {key: 'state', header: 'Status', render: s => stepBadge(s.state)},
+      {key: 'progress', header: 'Progress', align: 'right',
+        render: s => s.total ? escHtml((Number(s.done) || 0) + ' of ' + (Number(s.total) || 0)) : uiDash('')},
+    ],
+    rows: steps, empty: 'Nothing to show yet',
+  });
+}
 
 async function loadLiveStatus() {
   const el = document.getElementById('live-status');
@@ -486,83 +653,55 @@ async function loadLiveStatus() {
     // Keep the last good numbers on screen, but never let them pass for live.
     const flag = el.querySelector('.live-flag');
     if (flag) flag.textContent = "Can't reach Sellbird right now — numbers below may be old.";
-    else el.innerHTML = '<p class="muted live-flag">Can\'t reach Sellbird right now. ' +
-      'Is the dashboard window still open?</p>';
+    else el.innerHTML = uiCard({title: 'Pipeline right now',
+      body: '<p class="muted live-flag">Can\'t reach Sellbird right now. Is the dashboard window still open?</p>'});
     return;
   }
-  const glyph = {done: icon('check'), running: '<span class="pulse"></span>', partial: '', waiting: ''};
-  const fill = {done: 'var(--good)', running: 'var(--accent)', partial: 'var(--accent)', waiting: 'var(--line-strong)'};
-  const rows = d.steps.map(s => {
-    const st = Object.prototype.hasOwnProperty.call(glyph, s.state) ? s.state : 'waiting';
-    const pct = s.total ? Math.min(100, Math.round(100 * s.done / s.total)) : 0;
-    const bar = s.total
-      ? '<div class="bar"><span style="width:' + pct + '%;background:' + fill[st] + '"></span></div>'
-      : '';
-    return '<div class="step">' +
-      '<span class="step-icon ' + st + '">' + glyph[st] + '</span>' +
-      '<span class="step-label">' + escHtml(s.label) + '</span>' +
-      '<span class="step-detail">' + escHtml(s.detail) + '</span>' + bar +
-    '</div>';
-  }).join('');
+  _todayLive = d;
+  renderTodayNext();
   const jobName = r => r.stage === 'profile' ? 'Reading websites'
     : r.stage === 'discover' ? 'Searching for businesses (' + (r.provider || '') + ')'
     : String(r.stage || 'Job');
-  const running = d.running || [];
-  const runningHtml = running.length
-    ? running.map(r => '<span class="live-now"><span class="pulse"></span>' + escHtml(jobName(r)) +
-        ' · ' + r.elapsed_min + ' min' + (r.eta_text ? ' · ' + escHtml(r.eta_text) : '') + '</span>').join('')
-    : '<span class="live-now">Nothing running right now</span>';
-  const stoppedHtml = (d.stopped || []).length
-    ? '<div class="banner bad" style="margin:8px 0 0">' + icon('alert') + '<p style="color:inherit">' +
-      (d.stopped || []).map(r => escHtml(jobName(r))).join(', ') + ' stopped before finishing.</p></div>'
+  const running = (d.running || []).map(r => uiBanner({iconName: 'refresh',
+    title: jobName(r) + ' · ' + r.elapsed_min + ' min' + (r.eta_text ? ' · ' + r.eta_text : '')})).join('');
+  const stopped = (d.stopped || []).length
+    ? uiBanner({tone: 'danger', iconName: 'alert',
+        title: (d.stopped || []).map(jobName).join(', ') + ' stopped before finishing.'})
     : '';
-  el.innerHTML =
-    '<div class="live-head">' + runningHtml +
-      '<span class="setup-pct">Cost so far $' + Number(d.cost_usd || 0).toFixed(2) + '</span></div>' +
-    stoppedHtml +
-    '<div class="steps">' + rows + '</div>' +
-    (d.next ? '<div class="live-next">' + icon('arrow') + '<span><b>Next</b> · ' + escHtml(d.next) + '</span>' +
-      (d.next_tab ? '<button class="btn btn-secondary btn-sm" onclick="goTab(' + jsq(d.next_tab) + ')">Go</button>' : '') +
-      '</div>' : '') +
-    '<div class="live-flag">Updated ' + new Date().toLocaleTimeString() + ' · refreshes every 10 seconds</div>';
+  el.innerHTML = uiCard({
+    title: 'Pipeline right now',
+    action: 'USD ' + Number(d.cost_usd || 0).toFixed(2) + ' so far',
+    body: running + stopped + pipelineTable(d) + '<span class="live-flag" hidden></span>',
+  });
 }
 
-// KPI cards. Totals come from /api/today; the 14-day bars from /api/trend.
+// The summary strip. Totals come from /api/today; "this week" from /api/trend.
+function todaySummary(stats, trend) {
+  const s = stats || {}, t = trend || {};
+  const sum = a => (a || []).reduce((x, y) => x + (Number(y) || 0), 0);
+  const week = sum((t.found || []).slice(-7));
+  const waiting = (s.outbox_pending || 0) + (s.needs_human || 0);
+  const waitNote = [
+    s.outbox_pending ? s.outbox_pending + ' to approve' : '',
+    s.needs_human ? s.needs_human + ' handed to you' : '',
+  ].filter(Boolean).join(' · ') || 'nothing to approve';
+  // Instantly sends from its own servers, so the Outbox never sees them.
+  const sent = s.email_provider === 'instantly'
+    ? {label: 'Emails sent', value: null, sub: 'Instantly tracks sends'}
+    : {label: 'Emails sent', value: trend ? sum(t.sent) : null, sub: 'last 14 days · ' + (s.outbox_approved || 0) + ' scheduled'};
+  return uiMetricStrip([
+    {label: 'Contacts found', value: s.prospects || 0, delta: week ? '+' + week : '', sub: 'this week'},
+    sent,
+    {label: 'Conversations', value: s.open_conversations || 0, sub: (trend ? sum(t.replies) : 0) + ' new in 14 days'},
+    {label: 'Waiting on you', value: waiting, sub: waitNote},
+  ]);
+}
+
 function renderFigures(stats) {
   const el = document.getElementById('today-kpis');
-  if (!el) return;
-  const t = _trend || {};
-  const sum = a => (a || []).reduce((x, y) => x + (Number(y) || 0), 0);
-  const last7 = a => sum((a || []).slice(-7));
-  const card = (label, value, spark, note) =>
-    '<div class="kpi"><div class="kpi-label">' + label + '</div>' +
-    '<div class="kpi-main"><span class="kpi-value' + (value ? '' : ' zero') + '">' + value + '</span>' + spark + '</div>' +
-    '<span class="kpi-note">' + note + '</span></div>';
-
-  // Instantly sends from its own servers, so the Outbox never sees them.
-  const sent = stats.email_provider === 'instantly'
-    ? card('Emails sent', '&mdash;', '', 'Instantly tracks sends')
-    : card('Emails sent', sum(t.sent), sparkBars(t.sent, 'Emails sent per day, last 14 days'),
-           'last 14 days · <b>' + (stats.outbox_approved || 0) + '</b> scheduled');
-  const waiting = (stats.outbox_pending || 0) + (stats.needs_human || 0);
-  const waitNote = [
-    stats.outbox_pending ? stats.outbox_pending + ' to approve' : '',
-    stats.needs_human ? stats.needs_human + ' handed to you' : '',
-  ].filter(Boolean).join(' · ') || 'nothing to approve';
-  const facts = document.getElementById('today-facts');
-  if (facts) facts.innerHTML =
-    '<span><b>' + (stats.companies || 0) + '</b> companies</span>' +
-    '<span><b>' + (stats.unprofiled || 0) + '</b> sites not read yet</span>' +
-    '<span><b>' + (stats.signals_confirmed || 0) + '</b> signals on</span>';
-
-  el.innerHTML = '<div class="kpis">' +
-    card('Contacts found', stats.prospects || 0, sparkBars(t.found, 'Contacts found per day, last 14 days'),
-         '<b>+' + last7(t.found) + '</b> this week') +
-    sent +
-    card('Conversations', stats.open_conversations || 0, sparkBars(t.replies, 'New replies per day, last 14 days'),
-         '<b>' + sum(t.replies) + '</b> new in 14 days') +
-    card('Waiting on you', waiting, '', waitNote) +
-  '</div>';
+  if (el) el.innerHTML = todaySummary(stats, _trend);
+  const chip = document.getElementById('today-companies');
+  if (chip) chip.textContent = (stats.companies || 0) + ' companies';
 }
 
 let _todayStats = {};
@@ -573,37 +712,45 @@ async function loadTrend() {
   if (t && Array.isArray(t.days)) { _trend = t; renderFigures(_todayStats); }
 }
 
-// Contacts by stage: one bar, one legend, from /api/stats.
+// Contacts by stage: label, count and share, two columns.
+function stageGrid(pipe, total) {
+  const p = pipe || {};
+  const stages = [['To write', p.to_write], ['Contacted', p.contacted], ['Replied', p.replied],
+    ['Interested', p.interested], ['Ready to meet', p.ready_to_meet], ['Closed out', p.closed_out]];
+  return '<div class="stage-grid">' + stages.map(([label, n]) => {
+    const v = Number(n) || 0;
+    return '<div class="ui-kv"><span>' + label + '</span><span><b>' + v + '</b> <span class="muted">'
+      + (total ? Math.round(100 * v / total) : 0) + '%</span></span></div>';
+  }).join('') + '</div>';
+}
+
 async function loadFunnel() {
   const el = document.getElementById('today-figures');
   if (!el) return;
   const data = await api('/api/stats');
   if (!data) return;  // offline: keep the last numbers; Today's queue says so
-  if (data.error) { el.innerHTML = '<p class="muted" style="font-size:13px">Couldn\'t read the pipeline.</p>'; return; }
+  const action = '<span id="today-companies">' + (_todayStats.companies || 0) + ' companies</span>';
+  if (data.error) { el.innerHTML = uiCard({title: 'Contacts by stage', action, body: '<p class="muted">Couldn\'t read the pipeline.</p>'}); return; }
   const total = (data.prospects || {}).total || 0;
-  const pipe = data.pipeline || {};
-  const stages = [
-    ['To write', pipe.to_write || 0, 'c-accent-soft'],
-    ['Contacted', pipe.contacted || 0, 'c-accent'],
-    ['Replied', pipe.replied || 0, 'c-active'],
-    ['Interested', pipe.interested || 0, 'c-good'],
-    ['Ready to meet', pipe.ready_to_meet || 0, 'c-note'],
-    ['Closed out', pipe.closed_out || 0, 'c-idle'],
-  ];
-  if (!total) {
-    el.innerHTML = '<p class="muted" style="font-size:13px">No contacts yet. Scout adds them as it finds people.</p>';
-    return;
-  }
-  el.innerHTML =
-    '<div class="funnel-bar" role="img" aria-label="Contacts by stage">' +
-      stages.filter(s => s[1] > 0).map(s =>
-        '<span class="seg ' + s[2] + '" style="flex:' + s[1] + '" title="' + s[0] + ': ' + s[1] + '"></span>').join('') +
-    '</div>' +
-    '<div class="legend-rows">' + stages.map(s =>
-      '<div class="legend-row"><span class="legend-key"><i class="' + s[2] + '"></i>' + s[0] + '</span>' +
-      '<span class="legend-val">' + s[1] + '</span>' +
-      '<span class="legend-pct">' + Math.round(100 * s[1] / total) + '%</span></div>'
-    ).join('') + '</div>';
+  el.innerHTML = uiCard({title: 'Contacts by stage', action, body: total
+    ? stageGrid(data.pipeline, total)
+    : uiEmpty('No contacts yet', 'Scout adds them as it finds people.')});
+}
+
+function activityWhen(d) {
+  const day = dayLabel(d);
+  return (day && day !== 'Today' ? day.replace(/^\w+day, /, '') + ' · ' : '') + timeOfDay(d);
+}
+
+function activityTable(actions) {
+  return uiTable({
+    columns: [
+      {key: 'created_at', header: 'Time', render: a => escHtml(activityWhen(a.created_at))},
+      {key: 'event', header: 'Event', render: a => '<span class="ui-strong-text">' + actionText(a) + '</span>'},
+      {key: 'agent', header: 'Agent', align: 'right', render: a => uiBadge('neutral', a.agent)},
+    ],
+    rows: actions || [], empty: 'Nothing yet. Every action Sellbird takes shows up here.',
+  });
 }
 
 async function loadTodayActivity() {
@@ -612,19 +759,9 @@ async function loadTodayActivity() {
   const data = await api('/api/activity');
   if (!Array.isArray(data)) return;  // offline: Today's queue says so
   // Heartbeats are noise here; the Activity tab keeps them.
-  const shown = data.filter(a => a.agent !== 'main').slice(0, 8);
-  if (!shown.length) {
-    el.innerHTML = '<p class="muted" style="font-size:13px">' +
-      'Nothing yet. Every action Sellbird takes shows up here.</p>';
-    return;
-  }
-  el.innerHTML = '<div class="timeline">' + shown.map(a =>
-    '<div class="tl-item">' +
-      '<span class="tl-time">' + relTime(a.created_at) + '</span>' +
-      '<span class="tl-icon">' + icon(own(AGENT_ICONS, a.agent) || 'activity') + '</span>' +
-      '<span class="tl-text">' + actionText(a) + '</span>' +
-      '<span class="tl-agent">' + escHtml(a.agent) + '</span>' +
-    '</div>').join('') + '</div>';
+  el.innerHTML = uiCard({title: 'Recent activity',
+    action: '<a href="#" onclick="goTab(\'activity\');return false">See all</a>',
+    body: activityTable(data.filter(a => a.agent !== 'main').slice(0, 8))});
 }
 
 function navCount(id, n) {
@@ -642,24 +779,33 @@ function goTab(id) {
   showTab(id, btn);
 }
 
+function runBadge(status) {
+  const s = String(status || '');
+  if (s === 'completed' || s === 'done') return uiBadge('success', 'Completed', 'check');
+  if (s === 'running') return uiBadge('info', 'Running');
+  if (s === 'failed' || s === 'stopped' || s === 'error') return uiBadge('danger', s.charAt(0).toUpperCase() + s.slice(1));
+  return uiBadge('neutral', s ? s.charAt(0).toUpperCase() + s.slice(1) : 'Unknown');
+}
+
+function runsTable(runs) {
+  return uiTable({
+    columns: [
+      {key: 'stage', header: 'Run', render: r => '<span class="ui-strong">' + escHtml(String(r.stage || '').replace(/^./, c => c.toUpperCase())) + '</span>'},
+      {key: 'status', header: 'Status', render: r => runBadge(r.status)},
+      {key: 'records', header: 'Result', render: r => escHtml((r.records || 0) + ' records · '
+        + (r.cost_usd ? 'USD ' + Number(r.cost_usd).toFixed(3) : 'free'))},
+      {key: 'started_at', header: 'When', align: 'right', render: r => escHtml(relTime(r.started_at))},
+    ],
+    rows: runs || [], empty: 'Nothing has run yet',
+  });
+}
+
 async function loadRuns() {
   const el = document.getElementById('today-runs');
-  const block = document.getElementById('today-runs-block');
   if (!el) return;
   const runs = await api('/api/runs');
-  if (!Array.isArray(runs) || !runs.length) {
-    if (block) block.style.display = 'none';
-    el.innerHTML = '';
-    return;
-  }
-  if (block) block.style.display = '';
-  el.innerHTML = '<div class="runs">' + runs.slice(0, 5).map(r =>
-    '<div class="run">' +
-      '<span class="name">' + escHtml(r.stage) + '</span>' + badge(r.status) +
-      '<span class="when">' + relTime(r.started_at) + '</span>' +
-      '<span class="stats">' + (r.records || 0) + ' records · ' +
-        (r.cost_usd ? '$' + Number(r.cost_usd).toFixed(4) : 'free') + '</span>' +
-    '</div>').join('') + '</div>';
+  if (!Array.isArray(runs) || !runs.length) { el.innerHTML = ''; return; }
+  el.innerHTML = uiCard({title: 'Collector runs', body: runsTable(runs.slice(0, 5))});
 }
 
 // ── Setup checklist (lives on Today, and disappears once it's done) ──
@@ -714,10 +860,10 @@ async function loadSetupStatus() {
   const done = required.filter(c => c.done).length;
 
   el.innerHTML =
-    '<div class="card setup-card">' +
-      '<div class="setup-head"><div><h3>Finish setting up Sellbird</h3>' +
-        '<p class="muted">Sellbird starts finding prospects and sending once these are done.</p></div>' +
-        '<span class="setup-pct">' + done + ' of ' + required.length + ' done</span></div>' +
+    '<section class="ui-card setup-card">' +
+      '<div class="ui-card__head"><div><h3 class="ui-card__title">Finish setting up Sellbird</h3>' +
+        '<div class="ui-card__meta">Sellbird starts finding prospects and sending once these are done.</div></div>' +
+        uiBadge('neutral', done + ' of ' + required.length + ' done') + '</div>' +
       '<div class="bar thick" style="margin-bottom:8px"><span style="width:' + pct + '%;background:var(--accent)"></span></div>' +
       required.map(c => renderCheck(c, false)).join('') +
       (optional.length
@@ -726,7 +872,7 @@ async function loadSetupStatus() {
           '<div style="margin-top:6px">' +
           optional.map(c => renderCheck(c, true)).join('') + '</div></details>'
         : '') +
-    '</div>';
+    '</section>';
 }
 
 // The warmup step: get TrulyInbox, paste its key, or say you use another service.

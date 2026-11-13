@@ -113,52 +113,37 @@
 
 <main class="content">
 <header class="ui-topbar">
-  <div class="theme-switch" role="group" aria-label="Appearance">
+  <div class="ui-topbar__right">
+    <div class="theme-switch" role="group" aria-label="Appearance">
         <button data-theme-opt="auto" onclick="setTheme('auto')" title="Match your computer" aria-label="Match your computer"><svg class="icon" aria-hidden="true"><use href="#i-monitor"/></svg></button>
         <button data-theme-opt="light" onclick="setTheme('light')" title="Light" aria-label="Light"><svg class="icon" aria-hidden="true"><use href="#i-sun"/></svg></button>
         <button data-theme-opt="dark" onclick="setTheme('dark')" title="Dark" aria-label="Dark"><svg class="icon" aria-hidden="true"><use href="#i-moon"/></svg></button>
       </div>
-  <div class="ui-topbar__right" id="topbar-run"></div>
+    <div class="ui-topbar__group" id="topbar-run"></div>
+  </div>
 </header>
 <div class="content-inner">
 
 <!-- Today: what needs a human -->
-<div id="today" class="section active">
-  <div class="section-head">
-    <div>
-      <h2>Today</h2>
-      <p>What's waiting on you, and how the pipeline is moving.</p>
-    </div>
-  </div>
-
+<div id="today" class="section active"><div class="ui-page">
+  <div class="ui-pagehead"><div class="ui-pagehead__text">
+    <h2 class="ui-pagehead__title">Today</h2>
+    <div class="ui-pagehead__sub">What's waiting on you, and how the pipeline is moving.</div>
+  </div></div>
   <div id="today-renamed"></div>
-  <div id="today-setup"></div>
-
   <div id="today-kpis"></div>
-
-  <div class="grid-main">
-    <div>
-      <div class="subhead">Needs you</div>
-      <div id="today-queue"></div>
-
-      <div class="subhead">Pipeline right now</div>
-      <div class="card" id="live-status"></div>
-
-      <div class="subhead">Recent activity <span class="hint"><a href="#" onclick="goTab('activity');return false">See all</a></span></div>
-      <div class="card" id="today-activity"></div>
+  <div id="today-queue"></div>
+  <div id="today-next"></div>
+  <div id="today-setup"></div>
+  <div class="ui-grid">
+    <div id="live-status"></div>
+    <div class="ui-stack">
+      <div id="today-figures"></div>
+      <div id="today-runs"></div>
     </div>
-
-    <aside>
-      <div class="subhead">Contacts by stage</div>
-      <div class="card" id="today-figures"></div>
-      <div class="facts" id="today-facts"></div>
-      <div id="today-runs-block">
-        <div class="subhead">Collector runs</div>
-        <div class="card" id="today-runs" style="padding-top:8px;padding-bottom:8px"></div>
-      </div>
-    </aside>
   </div>
-</div>
+  <div id="today-activity"></div>
+</div></div>
 
 <!-- Signals: the confirmation gate -->
 <!-- Your company: everything Sellbird writes from (sellbird.offer) -->

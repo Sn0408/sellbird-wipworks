@@ -204,3 +204,139 @@ def test_running_switch_keeps_state_on_success():
     assert out["calls"] == ["/api/sellbird/stop"]
     lost = _set_running(True, None)  # API offline
     assert lost["state"]["running"] is False and lost["toasts"] == ["error"]
+
+
+# ── UI kit ──
+
+KIT = ("escHtml", "jsq", "safeHref", "icon", "uiDash", "uiBadge", "uiPageHead", "uiCard", "uiMetricStrip", "uiTabs",
+       "uiChips", "uiSwitch", "uiTable", "uiPager", "uiRowMenu", "uiEmpty", "uiBanner", "uiColumns",
+       "loadColumns", "saveColumns", "pageSlice")
+
+
+def kit(call, prelude=""):
+    return run_js(KIT, call, prelude)
+
+
+def test_badge_tones_and_escaping():
+    assert "is-neutral" in kit("uiBadge('bogus', 'X')")
+    assert "is-success" in kit("uiBadge('success', 'Done', 'check')")
+    assert "&lt;b&gt;x&lt;/b&gt;" in kit("uiBadge('success', '<b>x</b>')")
+
+
+def test_table_empty_escape_and_visible_columns():
+    cols = "[{key:'a', header:'A'}, {key:'b', header:'B'}]"
+    assert "Nothing here yet" in kit(f"uiTable({{columns:{cols}, rows:[]}})")
+    html = kit(f"uiTable({{columns:{cols}, rows:[{{a:'<img src=x onerror=1>', b:'y'}}]}})")
+    assert "<img" not in html and "ui-table-wrap" in html
+    only = kit(f"uiTable({{columns:{cols}, rows:[{{a:'1', b:'2'}}], visible:['a']}})")
+    assert ">A<" in only and ">B<" not in only
+    empty_cell = kit(f"uiTable({{columns:{cols}, rows:[{{a:null, b:''}}]}})")
+    assert "—" in empty_cell and "null" not in empty_cell
+
+
+def test_table_row_click():
+    html = kit("uiTable({columns:[{key:'a', header:'A'}], rows:[{a:'1', id:7}], onRow: r => 'open(' + r.id + ')'})")
+    assert 'onclick="open(7)"' in html and "ui-row-link" in html
+
+
+def test_metric_strip_missing_value():
+    html = kit("uiMetricStrip([{label:'Sent'}, {label:'Found', value: 4, delta:'+4', sub:'this week'}])")
+    assert "—" in html and "undefined" not in html and "+4" in html
+
+
+def test_pager_ends():
+    last = kit("uiPager({total:120, offset:100, size:50, onPage: o => 'go(' + o + ')'})")
+    assert re.search(r"<button[^>]*disabled[^>]*>Next", last)
+    first = kit("uiPager({total:120, offset:0, size:50, onPage: o => 'go(' + o + ')'})")
+    assert re.search(r"<button[^>]*disabled[^>]*>Previous", first)
+    assert "120 results" in first
+
+
+def test_page_slice_clamps():
+    assert json.loads(kit("JSON.stringify(pageSlice([1,2,3,4,5], 99, 2))")) == [5]
+    assert json.loads(kit("JSON.stringify(pageSlice([1,2,3], -4, 2))")) == [1, 2]
+
+
+def test_page_head_crumbs_escaped():
+    html = kit("uiPageHead({title:'Outbox', crumbs:[{label:'<i>x</i>', js:'goTab(\"outbox\")'}]})")
+    assert "ui-crumbs" in html and "&lt;i&gt;" in html and "<i>x" not in html
+
+
+def test_columns_storage_failure_falls_back():
+    prelude = "const localStorage = {getItem(){ throw new Error('no'); }, setItem(){ throw new Error('no'); }};"
+    assert json.loads(kit("JSON.stringify(loadColumns('t', ['a','b']))", prelude)) == ["a", "b"]
+    kit("saveColumns('t', ['a'])", prelude)  # must not throw
+    ok = "const store = {}; const localStorage = {getItem: k => store[k] ?? null, setItem: (k, v) => { store[k] = v; }};"
+    assert json.loads(kit("(saveColumns('t', ['b']), JSON.stringify(loadColumns('t', ['a','b'])))", ok)) == ["b"]
+
+
+def test_tabs_chips_switch_menu_empty_banner():
+    tabs = kit("uiTabs([{key:'r', label:'To review', count:3}, {key:'s', label:'Sent'}], 'r', k => 'pick(' + JSON.stringify(k) + ')')")
+    assert 'aria-selected="true"' in tabs and "To review" in tabs and ">3<" in tabs
+    assert "&lt;" in kit("uiChips([{key:'a', label:'<x>', on:true}], k => 'f()')")
+    sw = kit("uiSwitch({id:'s1', checked:true, label:'On', onChange:'go(this.checked)'})")
+    assert re.search(r"\schecked(?=[\s>])", sw) and 'role="switch"' in sw
+    menu = kit("uiRowMenu([{label:'Delete', js:'del()', danger:true}])")
+    assert "danger" in menu and "del()" in menu
+    assert "&lt;" in kit("uiEmpty('<t>', 'd')")
+    assert "&lt;" in kit("uiBanner({title:'<t>', body:'b'})")
+    assert "&lt;" in kit("uiCard({title:'<t>', body:'x'})")
+
+
+# ── Today ──
+
+TODAY = KIT + ("parseTs", "relTime", "dayLabel", "timeOfDay", "own", "actionText", "activityWhen", "stepBadge", "runBadge",
+               "todaySummary", "todayNext", "todayNeedsYou", "pipelineTable", "stageGrid", "runsTable", "activityTable")
+
+
+def today(call):
+    return run_js(TODAY, call, "const AGENT_ICONS = {};")
+
+
+def test_pipeline_table_all_zero_is_waiting():
+    live = {"steps": [{"label": "Find businesses", "detail": "", "state": "waiting", "done": 0, "total": 0},
+                      {"label": "Sent", "detail": "awaiting approval", "state": "waiting", "done": 0, "total": 3}],
+            "cost_usd": 0}
+    html = today(f"pipelineTable({json.dumps(live)})")
+    assert html.count("Waiting") == 2 and "NaN" not in html and "undefined" not in html
+    assert "0 of 3" in html and "—" in html
+
+
+def test_pipeline_states_map_to_badges():
+    live = {"steps": [{"label": "A", "state": "done", "done": 2, "total": 2},
+                      {"label": "B", "state": "running", "done": 1, "total": 5},
+                      {"label": "<b>C</b>", "state": "partial", "done": 1, "total": 5}]}
+    html = today(f"pipelineTable({json.dumps(live)})")
+    assert "Done" in html and "In progress" in html and "is-success" in html and "is-info" in html
+    assert "&lt;b&gt;C" in html
+
+
+def test_needs_you_empty_and_escaped():
+    assert today("todayNeedsYou([])") == ""
+    html = today("todayNeedsYou([{title:'<b>x</b>', detail:'d', action:'Open', tab:'outbox', tone:'warn'}])")
+    assert "&lt;b&gt;x" in html and "goTab(" in html
+
+
+def test_next_banner_says_nothing_needs_you_when_queue_empty():
+    html = today("todayNext({next:'Find emails', next_tab:'prospects'}, 0)")
+    assert "Next · Find emails" in html and "Nothing needs you right now" in html and "Go" in html
+    assert "Nothing needs you" not in today("todayNext({next:'Find emails'}, 2)")
+    assert today("todayNext({}, 0)").count("Nothing needs you") == 1
+
+
+def test_stage_grid_zero_total():
+    html = today("stageGrid({}, 0)")
+    assert "0%" in html and "NaN" not in html and "To write" in html and "Closed out" in html
+
+
+def test_summary_missing_stats():
+    html = today("todaySummary({}, null)")
+    assert "Contacts found" in html and "Waiting on you" in html and "undefined" not in html and "NaN" not in html
+
+
+def test_runs_and_activity_tables():
+    runs = today("runsTable([{stage:'profile', status:'completed', records:3, cost_usd:0, started_at:'2026-01-01 10:00:00'}])")
+    assert "Profile" in runs and "Completed" in runs and "3 records · free" in runs
+    assert "Nothing" in today("runsTable([])")
+    act = today("activityTable([{action_type:'outbox_edited', agent:'<i>dashboard</i>', created_at:'2026-01-01 10:00:00'}])")
+    assert "You edited a draft" in act and "&lt;i&gt;" in act
