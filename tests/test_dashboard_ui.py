@@ -346,3 +346,13 @@ def test_activity_csv_cells_never_run_as_formulas():
     for bad in ("=HYPERLINK(1)", "+1", "-2", "@x", " =1", "\tx"):
         assert run_js(("csvCell",), f"csvCell({json.dumps(bad)})").startswith("\"'")
     assert run_js(("csvCell",), "csvCell('say \"hi\"')") == '"say ""hi"""'
+
+
+def test_favicon_is_the_new_bird(client):
+    html = (WEB / "index.html").read_text(encoding="utf-8")
+    for name, size in (("favicon-32.png", "32x32"), ("favicon-192.png", "192x192")):
+        assert f'<link rel="icon" href="/static/{name}" type="image/png" sizes="{size}">' in html
+        r = client.get(f"/static/{name}")
+        assert r.status_code == 200 and r.headers["content-type"] == "image/png"
+    assert '<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">' in html
+    assert client.get("/static/apple-touch-icon.png").status_code == 200
