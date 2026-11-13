@@ -1517,3 +1517,4 @@ main.content { padding-top: 0; }
 .setup-card .check-item { padding: 6px 8px; }
 .setup-card .bar { margin-bottom: 0 !important; }
 .ui-menu > summary::before { content: none; display: none; }
+.ui-page > .ui-card, .ui-page > .ui-metrics, .ui-page > .ui-banner, .ui-page > .ui-tabs { margin-bottom: 0; }
