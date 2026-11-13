@@ -923,6 +923,41 @@ textarea.form-input { height: auto; padding: 8px 10px; }
 .step-actions label { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-caption); color: var(--text-2); cursor: pointer; }
 .step-actions input { accent-color: var(--accent); }
 
+/* Campaigns, redesign: count tabs, the list, and one page per campaign */
+.cp-counts { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: var(--sp-2); }
+.cp-count { display: grid; gap: 2px; padding: 8px 12px; border: 1px solid var(--line-strong); border-radius: var(--r-sm);
+  background: var(--surface); text-align: left; font: 400 12px/16px var(--sans); color: var(--text-2); cursor: pointer; min-width: 0; }
+.cp-count__n { font-size: 16px; line-height: 24px; font-weight: 600; color: var(--text); }
+.cp-count[aria-selected="true"] { border-color: var(--brand); box-shadow: 0 0 0 1px var(--brand); color: var(--link); }
+.cp-count[aria-selected="true"] .cp-count__n { color: var(--link); }
+@media (hover: hover) { .cp-count:not([aria-selected="true"]):hover { background: var(--surface-2); } }
+#campaigns-list .ui-table td:first-child { padding-top: 6px; padding-bottom: 6px; }
+#campaigns-list .ui-table .ui-cell-main { font-weight: 500; }
+.cp-nums { font-variant-numeric: tabular-nums; }
+.cp-muted { color: var(--text-3); }
+#campaigns-list .ui-pagehead__title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+#campaigns-list .ui-pagehead__title .ui-badge { font-weight: 500; }
+.cp-grid { align-items: start; }
+.cp-steps { display: grid; }
+.cp-step { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: var(--sp-3); padding: var(--sp-4) 0; border-top: 1px solid var(--line); }
+.cp-step:first-child { border-top: 0; padding-top: 0; }
+.cp-step__n { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; background: var(--surface-2);
+  border: 1px solid var(--line-strong); font-weight: 600; font-size: 11px; color: var(--text); }
+.cp-step__main { display: grid; gap: var(--sp-2); min-width: 0; }
+.cp-step__top { display: flex; gap: var(--sp-2); align-items: baseline; flex-wrap: wrap; }
+.cp-step__top .cp-muted { font-size: 11px; line-height: 14px; }
+.cp-step__subject { color: var(--text); overflow-wrap: anywhere; }
+.cp-step__body { white-space: pre-line; color: var(--text-2); background: var(--surface-2); border-radius: var(--r-md);
+  padding: var(--sp-3) var(--sp-4); max-width: 72ch; overflow-wrap: anywhere; text-wrap: pretty; }
+.cp-step .step-actions { margin-top: 0; }
+.cp-acts { display: inline-flex; align-items: center; gap: var(--sp-2); justify-content: flex-end; }
+.cp-check { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-2); cursor: pointer; white-space: nowrap; }
+.cp-check input { accent-color: var(--accent); }
+#campaigns-list .campaign-progress { margin-top: 0; }
+#campaigns-list .ui-menu > summary::before { content: none; }
+#campaigns-list .ui-table td:has(.cp-acts) { white-space: normal; padding-top: 6px; padding-bottom: 6px; }
+.cp-acts { flex-wrap: wrap; }
+
 /* ── Conversations ───────────────────────────────────────────── */
 
 .convo-card {
@@ -1137,6 +1172,30 @@ a.btn, a.btn:hover { text-decoration: none; }
 .offer-mail { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
 .offer-mail-subject { font-weight: 600; margin-bottom: 8px; }
 .offer-mail pre { white-space: pre-wrap; font: inherit; margin: 0; line-height: 1.5; }
+/* Your company, redesign: sections list, then one edit page per section */
+#company-body .co-value { display: block; white-space: normal; color: var(--text-2); max-width: 70ch; min-width: 220px; padding: 6px 0; }
+#company-body .ui-table .ui-cell-main { font-weight: 500; }
+#company-body .ui-table td:first-child { padding-top: 6px; padding-bottom: 6px; }
+#company-body .ui-pagehead__title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+#company-body .ui-pagehead__title .ui-badge { font-weight: 500; }
+.co-grid { align-items: start; }
+.co-help { margin: 4px 0 0; font-size: 11px; line-height: 14px; color: var(--text-3); text-wrap: pretty; }
+#company-body .ui-card .form-group { margin-bottom: 0; }
+#company-body .ui-card { gap: var(--sp-4); }
+#company-body .company-grid { gap: var(--sp-4); }
+#company-body .form-input:disabled { background: var(--surface-2); color: var(--text-3); }
+#company-body .offer-proposed { border-radius: var(--r-md); }
+#company-body .offer-ideas { gap: var(--sp-2); }
+#company-body .offer-idea { padding: 8px 12px; border: 1px solid var(--line-strong); border-radius: var(--r-sm); background: var(--surface);
+  box-shadow: none; font: inherit; color: var(--text); cursor: pointer; }
+#company-body .offer-idea-text { font-weight: 600; font-size: 12px; line-height: 16px; }
+@media (hover: hover) { #company-body .offer-idea:hover { border-color: var(--brand); background: var(--surface); } }
+#company-body .ui-card__action code { font-size: 11px; }
+#company-body .company-learned { margin-top: var(--sp-2); }
+#company-body .company-learned pre { font-size: 12px; }
+/* The breadcrumb is a <nav>: keep the sidebar's nav layout off it. */
+#company-body .ui-crumbs, #campaigns-list .ui-crumbs { flex-direction: row; justify-content: flex-start; align-items: center; gap: 4px;
+  width: auto; margin: 0 0 4px; padding: 0; order: 0; overflow: visible; }
 /* ── Inboxes: list rows, and the dialog for one inbox or adding one ── */
 
 .inbox-summary { display: flex; flex-wrap: wrap; gap: 4px 18px; margin-bottom: var(--sp-4); font-size: var(--fs-ui); color: var(--text-2); }
