@@ -4569,10 +4569,19 @@ function activityFeed(actions, f, size = 25) {
 }
 
 // The loaded log as CSV, built in the page: no new endpoint.
+// One CSV cell. Text from websites and replies must not run as a spreadsheet
+// formula, so a value starting with = + - @ (or a tab/newline) gets a quote,
+// as sellbird/register.py does for the server-side exports.
+function csvCell(v) {
+  let t = String(v == null ? '' : v);
+  if (/^\s*[=+\-@]/.test(t) || /^[\t\r\n]/.test(t)) t = "'" + t;
+  return '"' + t.replace(/"/g, '""') + '"';
+}
+
 function exportActivity() {
   const rows = activityRows(_activity, _actFilter);
   if (!rows.length) { showToast('Nothing to export.', 'error'); return; }
-  const cell = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+  const cell = csvCell;
   const div = document.createElement('div');
   const text = a => { div.innerHTML = actionText(a); return div.textContent; };
   const csv = ['time,agent,type,event'].concat(rows.map(a =>

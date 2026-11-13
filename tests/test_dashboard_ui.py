@@ -340,3 +340,9 @@ def test_runs_and_activity_tables():
     assert "Nothing" in today("runsTable([])")
     act = today("activityTable([{action_type:'outbox_edited', agent:'<i>dashboard</i>', created_at:'2026-01-01 10:00:00'}])")
     assert "You edited a draft" in act and "&lt;i&gt;" in act
+
+
+def test_activity_csv_cells_never_run_as_formulas():
+    for bad in ("=HYPERLINK(1)", "+1", "-2", "@x", " =1", "\tx"):
+        assert run_js(("csvCell",), f"csvCell({json.dumps(bad)})").startswith("\"'")
+    assert run_js(("csvCell",), "csvCell('say \"hi\"')") == '"say ""hi"""'
