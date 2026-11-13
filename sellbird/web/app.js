@@ -2,7 +2,7 @@ let currentTab = 'today';
 let companyDrill = false;      // true while viewing a single company's contacts
 let _companies = [], _prospects = [], _campaigns = [];
 let _signals = null;           // last /api/signals payload, for the cohort builder
-let _desk = { items: [], i: 0 };
+let _desk = { items: [], i: 0, open: null };
 
 // ── Appearance ──
 //
@@ -1950,97 +1950,258 @@ async function loadUsage() {
 
 // ── Outbox: a decisions desk, not a wall of drafts ──
 //
-// Approving mail is a queue of one-at-a-time judgements. Showing all of them
-// stacked invites a single "approve all" reflex, which is exactly the review
-// the approval ladder exists to prevent. One email fills the pane; the rest
-// wait in the rail.
+// Approving mail is a queue of one-at-a-time judgements. The list shows what
+// is waiting, scheduled, sent and stuck; each email opens on its own page
+// with Reject / Edit / Approve, and A/R/E/J/K work there. "Approve all"
+// leaves anything Sellbird held for you to read one by one.
+
+const OUTBOX_PAGE = 25;
+let _ob = {tab: null, offset: 0, data: null, picked: false};
+
+// Every row lands in one bucket by its status. Rejected, failed and
+// cancelled all go under "Didn't send", so a stuck send is never hidden.
+function outboxBuckets(data) {
+  const d = data || {};
+  const b = {review: [], scheduled: [], sent: [], didnt: []};
+  const by = {pending_review: 'review', approved: 'scheduled', sending: 'scheduled', sent: 'sent',
+              failed: 'didnt', rejected: 'didnt', cancelled: 'didnt'};
+  const from = [['pending', 'review'], ['approved', 'scheduled'], ['sent', 'sent'], ['failed', 'didnt']];
+  for (const [key, fallback] of from) {
+    for (const r of (d[key] || [])) b[own(by, r && r.status) || fallback].push(r);
+  }
+  return b;
+}
+
+function outboxStatusBadge(r) {
+  switch (r && r.status) {
+    case 'pending_review': return heldReason(r) ? uiBadge('danger', 'Held') : uiBadge('warning', 'To review');
+    case 'approved': return uiBadge('info', 'Scheduled');
+    case 'sending': return uiBadge('info', 'Sending');
+    case 'sent': return uiBadge('success', 'Sent', 'check');
+    case 'failed': return uiBadge('danger', 'Failed', 'alert');
+    case 'rejected': return uiBadge('neutral', 'Rejected');
+    case 'cancelled': return uiBadge('neutral', 'Cancelled');
+  }
+  return uiBadge('neutral', String((r && r.status) || 'Unknown').replace(/_/g, ' '));
+}
+
+function outboxStep(r) {
+  if (r && r.kind === 'reply') return 'Reply';
+  return r && r.step !== undefined && r.step !== null && r.step !== '' ? 'Email ' + r.step : '';
+}
+
+// The numbers above the tabs. The endpoint caps Sent and Didn't send at 25
+// rows, so a full list says "last 25" rather than passing for a total.
+function outboxSummary(b, data) {
+  const n = (rows, cap) => rows.length >= cap ? rows.length + '+' : rows.length;
+  const held = b.review.filter(r => heldReason(r)).length;
+  const next = b.scheduled.map(r => r.send_at).filter(Boolean).sort()[0];
+  const today = new Date().toDateString();
+  const sentToday = b.sent.filter(r => r.sent_at && parseTs(r.sent_at).toDateString() === today).length;
+  const capped = b.sent.length >= 25;
+  return uiMetricStrip([
+    {label: 'To review', value: b.review.length,
+     sub: !b.review.length ? 'nothing waiting' : held ? held + ' held for you' : 'waiting for your decision'},
+    {label: 'Scheduled', value: b.scheduled.filter(r => r.status === 'approved').length >= 50 ? b.scheduled.length + '+' : b.scheduled.length,
+     sub: next ? 'next sends ' + formatDate(next) : 'nothing queued'},
+    {label: 'Sent', value: n(b.sent, 25),
+     sub: (capped && sentToday >= 25 ? '25+' : sentToday) + ' today' + (capped ? ' · last 25 shown' : '')},
+    {label: 'Didn’t send', value: n(b.didnt, 25),
+     sub: 'rejected, failed or cancelled' + (b.didnt.length >= 25 ? ' · last 25' : '')},
+  ]);
+}
+
+function outboxTable(rows, kind) {
+  const when = {review: ['Sends', 'send_at'], scheduled: ['Sends', 'send_at'],
+                sent: ['Sent', 'sent_at'], didnt: ['Updated', 'updated_at']}[kind] || ['Sends', 'send_at'];
+  const columns = [
+    {key: 'to_email', header: 'To', render: r => '<span class="ui-strong">' + uiDash(r.to_email) + '</span>'},
+    {key: 'status', header: '', render: r => outboxStatusBadge(r)},
+    {key: 'step', header: 'Step', render: r => uiDash(outboxStep(r))},
+    {key: 'subject', header: 'Subject', render: r => '<span class="ob-clip">' + uiDash(r.subject) + '</span>'},
+  ];
+  if (kind === 'didnt') {
+    columns.push({key: 'error', header: 'Reason', render: r => '<span class="ob-clip">' + uiDash(r.error) + '</span>'});
+  }
+  columns.push({key: 'when', header: when[0], align: 'right',
+                render: r => r.status === 'sending' ? 'now' : (formatDate(r[when[1]]) || uiDash(''))});
+  columns.push({key: 'menu', header: '', align: 'right', render: r => {
+    const id = jsq(r.id);
+    const items = [{label: 'Open email', js: 'openOutboxEmail(' + id + ')'}];
+    if (r.status === 'pending_review') {
+      items.push({label: 'Approve', js: 'outboxAct(' + id + ',\'approve\')'},
+                 {label: 'Edit', js: 'openOutboxEmail(' + id + ');deskEdit(' + id + ')'},
+                 {label: 'Reject', js: 'outboxAct(' + id + ',\'reject\')', danger: true});
+    }
+    return uiRowMenu(items);
+  }});
+  const empty = {review: 'Nothing to review', scheduled: 'Nothing scheduled', sent: 'Nothing sent yet',
+                 didnt: 'Nothing failed, was rejected or cancelled'}[kind] || 'Nothing here yet';
+  return uiTable({columns, rows, rowKey: r => r.id, empty,
+                  onRow: r => 'openOutboxEmail(' + jsq(r.id) + ')'});
+}
 
 async function loadOutbox() {
   const [data, mode] = await Promise.all([api('/api/outbox'), api('/api/sending-mode')]);
   _sendingMode = mode && !mode.error ? mode : null;
   const banner = document.getElementById('outbox-banner');
-  const desk = document.getElementById('outbox-desk');
   const list = document.getElementById('outbox-list');
-  const actions = document.getElementById('outbox-actions');
-  if (!data) { desk.innerHTML = offlineState(); list.innerHTML = ''; return; }
-  if (data.error) {
+  const parts = ['outbox-summary', 'outbox-tabs'].map(id => document.getElementById(id));
+  if (!data || data.error) {
+    _ob.data = null;
+    _desk.open = null;
+    outboxShowList(true);
+    parts.forEach(el => { el.innerHTML = ''; });
     // Never let a failed read pass for "Nothing to review".
-    desk.innerHTML = emptyState(icon('alert'), 'Couldn\'t read the Outbox', escHtml(data.error));
-    list.innerHTML = '';
+    list.innerHTML = !data ? offlineState()
+      : uiBanner({tone: 'danger', iconName: 'alert', title: 'Couldn\'t read the Outbox', body: data.error});
     return;
   }
-
-  const pending = data.pending || [];
+  _ob.data = data;
+  const b = outboxBuckets(data);
+  const pending = b.review;
   _desk.items = pending;
   _desk.footer = data.footer || '';
-  // Keep the desk on the draft being edited even if the list shifted.
+  // Keep the page on the draft being edited even if the list shifted.
   const editingAt = _desk.editing ? pending.findIndex(p => p.id === _desk.editing) : -1;
-  if (editingAt >= 0) _desk.i = editingAt;
-  else if (_desk.editing) {
+  if (editingAt < 0 && _desk.editing) {
     _desk.editing = null;
     _desk.unsaved = null;
   }
+  const openAt = _desk.open !== null && _desk.open !== undefined ? pending.findIndex(p => p.id === _desk.open) : -1;
+  if (openAt >= 0) _desk.i = openAt;
   if (_desk.i >= pending.length) _desk.i = Math.max(0, pending.length - 1);
   navCount('nav-outbox', pending.length);
 
-  actions.innerHTML =
-    (pending.length && !data.paused
-      ? (pending.length > pending.filter(p => heldReason(p)).length
-        ? '<button class="btn btn-primary btn-sm" onclick="outboxApproveAll()" ' +
-          'title="Emails Sellbird held are left for you to approve one by one">Approve all ' +
-          (pending.length - pending.filter(p => heldReason(p)).length) + '</button>' : '') : '') +
+  const approvable = pending.length - pending.filter(p => heldReason(p)).length;
+  document.getElementById('outbox-actions').innerHTML =
+    (pending.length && !data.paused && approvable
+      ? '<button class="btn btn-secondary" onclick="outboxApproveAll()" ' +
+        'title="Emails Sellbird held are left for you to approve one by one">Approve all ' + approvable + '</button>' : '') +
     (data.paused
-      ? '<button class="btn btn-secondary btn-sm" onclick="sendingToggle(\'resume\')">' +
-        'Resume sending</button>'
-      : '<button class="btn btn-secondary btn-sm" onclick="sendingToggle(\'pause\')">' +
-        'Pause all sending</button>');
+      ? '<button class="btn btn-primary" onclick="sendingToggle(\'resume\')">Resume sending</button>'
+      : '<button class="btn btn-secondary" onclick="sendingToggle(\'pause\')">Pause all sending</button>');
 
   // The kill switch gets a banner only when it's actually on — a permanent
   // bar for a thing that isn't happening is just noise.
-  banner.innerHTML = sendingModeBanner(_sendingMode) + (data.paused
-    ? '<div class="banner bad">' + icon('alert') + '<div><b>Sending is paused</b>' +
-        '<p>' + escHtml(data.paused) + '. Approved mail stays queued until you resume.</p></div></div>'
-    : '');
-  // Only once there is mail to warn about: a fresh install sends nothing.
-  const anyMail = pending.length || (data.approved || []).length || (data.sent || []).length;
-  if (data.compliance_notice && anyMail) {
-    banner.innerHTML +=
-      '<div class="banner wait">' + icon('alert') + '<div><b>Add your postal address</b>' +
-        '<p>' + escHtml(data.compliance_notice) + '</p></div></div>';
-  }
+  banner.innerHTML = sendingModeBanner(_sendingMode) + outboxNotices(data, b);
 
-  desk.innerHTML = pending.length ? renderDesk(pending, _desk.i) :
-    '<div class="card">' + emptyState(icon('check'), 'Nothing to review',
+  if (!_ob.picked || !_ob.tab) {
+    _ob.tab = ['review', 'scheduled', 'sent', 'didnt'].find(k => b[k].length) || 'review';
+  }
+  parts[0].innerHTML = outboxSummary(b, data);
+  parts[1].innerHTML = uiTabs([
+    {key: 'review', label: 'To review', count: b.review.length},
+    {key: 'scheduled', label: 'Scheduled', count: b.scheduled.length},
+    {key: 'sent', label: 'Sent', count: b.sent.length},
+    {key: 'didnt', label: 'Didn’t send', count: b.didnt.length},
+  ], _ob.tab, k => 'outboxTab(' + jsq(k) + ')');
+  renderOutboxList(b);
+  if (_desk.open !== null && _desk.open !== undefined && outboxFind(b, _desk.open)) renderOutboxEmail();
+  else { _desk.open = null; outboxShowList(true); }
+}
+
+function outboxNotices(data, b) {
+  let html = data.paused ? uiBanner({tone: 'danger', iconName: 'alert', title: 'Sending is paused',
+    body: data.paused + '. Approved mail stays queued until you resume.'}) : '';
+  // Only once there is mail to warn about: a fresh install sends nothing.
+  const anyMail = b.review.length || b.scheduled.length || b.sent.length;
+  if (data.compliance_notice && anyMail) {
+    html += uiBanner({tone: 'warning', iconName: 'alert', title: 'Add your postal address', body: data.compliance_notice});
+  }
+  return html;
+}
+
+function renderOutboxList(b) {
+  const rows = b[_ob.tab] || [];
+  if (_ob.offset >= rows.length) _ob.offset = Math.max(0, Math.floor((rows.length - 1) / OUTBOX_PAGE) * OUTBOX_PAGE);
+  let html = '';
+  if (_ob.tab === 'review' && !rows.length) {
+    html = '<div class="ui-card">' + uiEmpty('Nothing to review',
       _sendingMode && _sendingMode.mode === 'autopilot'
         ? 'Autopilot is on, so Sellbird sends on its own. Anything it holds for you shows up here.'
-        : 'Every draft Sellbird writes lands here first. Approve one and it sends on schedule.') +
-    '</div>';
+        : 'Every draft Sellbird writes lands here first. Approve one and it sends on schedule.') + '</div>';
+  } else {
+    html = outboxTable(pageSlice(rows, _ob.offset, OUTBOX_PAGE), _ob.tab)
+      + uiPager({total: rows.length, offset: _ob.offset, size: OUTBOX_PAGE, onPage: o => 'outboxPage(' + o + ')'});
+  }
+  document.getElementById('outbox-list').innerHTML = html;
+}
 
-  const table = (title, rows, cols) => {
-    if (!rows || !rows.length) return '';
-    let h = '<div class="subhead">' + title + ' <span class="hint">' + rows.length + '</span></div>' +
-      '<div class="table-card"><table class="nowrap clip"><thead><tr>' +
-      cols.map(c => '<th>' + c[0] + '</th>').join('') + '</tr></thead><tbody>';
-    for (const r of rows) {
-      h += '<tr>' + cols.map(c => '<td' + (c[2] ? ' class="muted"' : '') + '>' +
-        (c[3] ? c[1](r) : escHtml(String(c[1](r) ?? ''))) + '</td>').join('') + '</tr>';
-    }
-    return h + '</tbody></table></div>';
-  };
+function outboxTab(key) {
+  _ob.tab = key;
+  _ob.picked = true;
+  _ob.offset = 0;
+  if (_ob.data) loadOutboxFromCache();
+}
 
-  list.innerHTML =
-    table('Approved &amp; scheduled', data.approved, [
-      ['To', r => r.to_email], ['Step', r => r.step], ['Subject', r => r.subject],
-      ['Sends', r => r.status === 'sending' ? badge(r.status) : escHtml(formatDate(r.send_at)), true, true],
-    ]) +
-    table('Recently sent', data.sent, [
-      ['To', r => r.to_email], ['Step', r => r.step], ['Subject', r => r.subject],
-      ['Sent', r => formatDate(r.sent_at), true],
-    ]) +
-    table('Didn\'t send', data.failed, [
-      ['To', r => r.to_email], ['Status', r => badge(r.status), false, true],
-      ['Reason', r => r.error, true], ['Updated', r => formatDate(r.updated_at), true],
-    ]);
+function outboxPage(offset) {
+  _ob.offset = Math.max(0, offset);
+  if (_ob.data) renderOutboxList(outboxBuckets(_ob.data));
+}
+
+function loadOutboxFromCache() {
+  const b = outboxBuckets(_ob.data);
+  document.getElementById('outbox-tabs').innerHTML = uiTabs([
+    {key: 'review', label: 'To review', count: b.review.length},
+    {key: 'scheduled', label: 'Scheduled', count: b.scheduled.length},
+    {key: 'sent', label: 'Sent', count: b.sent.length},
+    {key: 'didnt', label: 'Didn’t send', count: b.didnt.length},
+  ], _ob.tab, k => 'outboxTab(' + jsq(k) + ')');
+  renderOutboxList(b);
+}
+
+function outboxFind(b, id) {
+  for (const k of ['review', 'scheduled', 'sent', 'didnt']) {
+    const hit = b[k].find(r => String(r.id) === String(id));
+    if (hit) return hit;
+  }
+  return null;
+}
+
+// The list and the email page share the section; one shows at a time.
+function outboxShowList(on) {
+  ['outbox-head', 'outbox-banner', 'outbox-summary', 'outbox-tabs', 'outbox-list'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle('ob-hide', !on);
+  });
+  const desk = document.getElementById('outbox-desk');
+  if (desk) {
+    desk.classList.toggle('ob-hide', on);
+    if (on) desk.innerHTML = '';
+  }
+}
+
+function openOutboxEmail(id) {
+  if (!_ob.data || deskBusy()) return;
+  const b = outboxBuckets(_ob.data);
+  const item = outboxFind(b, id);
+  if (!item) return;
+  const at = b.review.findIndex(r => String(r.id) === String(id));
+  if (at >= 0) _desk.i = at;
+  _desk.open = item.id;
+  renderOutboxEmail();
+  window.scrollTo(0, 0);
+}
+
+function closeOutboxEmail() {
+  if (deskBusy()) return;
+  _desk.open = null;
+  outboxShowList(true);
+}
+
+function renderOutboxEmail() {
+  if (!_ob.data) return;
+  const b = outboxBuckets(_ob.data);
+  const item = outboxFind(b, _desk.open);
+  if (!item) { closeOutboxEmail(); return; }
+  const at = b.review.findIndex(r => String(r.id) === String(item.id));
+  const pos = at >= 0 ? {index: at, count: b.review.length} : null;
+  outboxShowList(false);
+  document.getElementById('outbox-desk').innerHTML = outboxEmailPage(item, item.context || null, pos, {
+    editing: _desk.editing === item.id, unsaved: _desk.unsaved, footer: _desk.footer,
+    paused: _ob.data.paused || '',
+  });
 }
 
 const CONTACT_SOURCES = {
@@ -2053,33 +2214,112 @@ const CONTACT_SOURCES = {
   web_search: 'web search',
 };
 
-// What the draft is built on, so every claim can be checked against it.
+// What the draft is built on, so every claim can be checked against it:
+// a Prospect card and a "What Sellbird used" card.
 function renderDeskContext(ctx) {
   if (!ctx) return '';
-  const row = (k, v) => v ? '<div class="k">' + k + '</div><div class="v">' + v + '</div>' : '';
+  const dl = items => '<dl class="ui-details">' + items.map(([k, v]) =>
+    '<div><dt>' + escHtml(k) + '</dt><dd>' + (v || uiDash('')) + '</dd></div>').join('') + '</dl>';
   const href = safeHref(ctx.website);
   const site = href
     ? '<a href="' + href + '" target="_blank" rel="noopener noreferrer">' +
-        escHtml(ctx.website.replace(/^https?:\/\//i, '')) + ' &#8599;</a>'
+        escHtml(String(ctx.website).replace(/^https?:\/\//i, '')) + ' &#8599;</a>'
+    : (ctx.website ? escHtml(ctx.website) : '');
+  const source = Object.prototype.hasOwnProperty.call(CONTACT_SOURCES, ctx.contact_source)
+    ? CONTACT_SOURCES[ctx.contact_source] : ctx.contact_source;
+  const prospect = uiCard({title: 'Prospect', body: dl([
+    ['Name', escHtml(ctx.contact || '')],
+    ['Title', escHtml(ctx.contact_title || '')],
+    ['Company', escHtml(ctx.company || '')],
+    ['Website', site],
+    ['Email status', ctx.email_status ? escHtml(ctx.email_status) : ''],
+    ['Fit score', ctx.score ? escHtml(ctx.score) + ' of 100' : ''],
+    ['Found via', escHtml(source || '')],
+  ])});
+  const signals = Object.entries(ctx.signals || {}).map(([k, v]) => ({k, v}));
+  const used = uiCard({title: 'What Sellbird used', body:
+    uiTable({columns: [{key: 'k', header: 'Signal'}, {key: 'v', header: 'Value', render: r => '<span class="ob-wrap">' + uiDash(r.v) + '</span>'}],
+             rows: signals, empty: 'No signals recorded for this company'}) +
+    dl([
+      ['About', escHtml(ctx.description || '')],
+      ['Campaign', ctx.campaign ? escHtml(ctx.campaign) +
+        ' <span class="muted">(how they were found, not a fact about them)</span>' : ''],
+      ['Writer notes', escHtml(ctx.notes || '')],
+    ])});
+  return prospect + used;
+}
+
+// One email on its own page. `pos` ({index, count}) is set only for an email
+// waiting on you; anything else is shown read-only. `opts` carries the edit
+// state: {editing, unsaved: {subject, body}, footer, paused}.
+function outboxEmailPage(item, ctx, pos, opts) {
+  const o = opts || {};
+  const pending = item.status === 'pending_review';
+  const editing = pending && !!o.editing;
+  const id = jsq(item.id);
+  const unsaved = (editing && o.unsaved) || {subject: item.subject || '', body: item.body || ''};
+  const step = outboxStep(item);
+  const whenKey = item.status === 'sent' ? ['Sent', item.sent_at]
+    : ['failed', 'rejected', 'cancelled'].includes(item.status) ? ['Updated', item.updated_at] : ['Sends', item.send_at];
+  const summary = [step, item.to_email ? 'To ' + item.to_email : '',
+                   whenKey[1] ? whenKey[0] + ' ' + formatDate(whenKey[1]) : ''].filter(Boolean).join(' · ');
+
+  let actions = '';
+  if (pending && editing) {
+    actions = '<button class="btn btn-secondary" onclick="deskEdit(null)">Cancel</button>' +
+      '<button class="btn btn-primary" onclick="deskSave(' + id + ')">Save</button>';
+  } else if (pending) {
+    actions = '<button class="btn btn-secondary" onclick="outboxAct(' + id + ',\'reject\')">Reject <kbd>R</kbd></button>' +
+      '<button class="btn btn-secondary" onclick="deskEdit(' + id + ')">Edit <kbd>E</kbd></button>' +
+      '<button class="btn btn-primary" onclick="outboxAct(' + id + ',\'approve\')">' + icon('check') + 'Approve <kbd>A</kbd></button>';
+  }
+  const nav = pos && pos.count
+    ? '<div class="ob-pos"><button type="button" class="btn btn-sm btn-secondary" aria-label="Previous email"' +
+        (pos.index <= 0 ? ' disabled' : '') + ' onclick="deskGo(' + (pos.index - 1) + ')">&lsaquo;</button>' +
+      '<span>' + (pos.index + 1) + ' of ' + pos.count + '</span>' +
+      '<button type="button" class="btn btn-sm btn-secondary" aria-label="Next email"' +
+        (pos.index >= pos.count - 1 ? ' disabled' : '') + ' onclick="deskGo(' + (pos.index + 1) + ')">&rsaquo;</button></div>'
     : '';
-  const who = [ctx.contact, ctx.contact_title].filter(Boolean).map(escHtml).join(' &middot; ');
-  const email = [ctx.email_status, ctx.score ? 'score ' + ctx.score : '']
-    .filter(Boolean).map(escHtml).join(' &middot; ');
-  const signals = Object.entries(ctx.signals || {})
-    .map(([k, v]) => escHtml(k) + ': <b>' + escHtml(v) + '</b>').join('<br>');
-  return '<div class="desk-context">' +
-    row('Company', escHtml(ctx.company)) +
-    row('Website', site) +
-    row('About', escHtml(ctx.description)) +
-    row('Contact', who) +
-    row('Found via', escHtml(Object.prototype.hasOwnProperty.call(CONTACT_SOURCES, ctx.contact_source)
-      ? CONTACT_SOURCES[ctx.contact_source] : ctx.contact_source)) +
-    row('Email', email) +
-    row('Signals', signals) +
-    row('Campaign', ctx.campaign ? escHtml(ctx.campaign) +
-      ' <span class="muted">(how they were found, not a fact about them)</span>' : '') +
-    row('Writer notes', escHtml(ctx.notes)) +
-  '</div>';
+  const head = uiPageHead({
+    title: item.subject || '(no subject)', sub: summary,
+    crumbs: [{label: 'Outbox', js: 'closeOutboxEmail()'}, {label: item.to_email || 'Email'}],
+    actions: nav + actions,
+  }).replace('</h2>', ' ' + outboxStatusBadge(item) + '</h2>');
+
+  const why = heldReason(item);
+  const held = why ? uiBanner({tone: 'warning', iconName: 'alert', title: 'Sellbird held this instead of sending it',
+    body: why + '. Read it before approving: text from a website or an email can try to steer what Sellbird writes.'}) : '';
+  const paused = o.paused ? uiBanner({tone: 'danger', iconName: 'alert', title: 'Sending is paused',
+    body: o.paused + '. Approved mail stays queued until you resume.'}) : '';
+
+  // A reply keeps its subject: Gmail threads by it.
+  const fixedSubject = item.kind === 'reply'
+    ? ' readonly title="A reply keeps its subject so it stays in the thread"' : '';
+  const footerText = o.footer || '';
+  // Cold email leaves with the footer underneath; show it as it will go out.
+  // Not added again when the body already ends with it, as in the Sender.
+  const added = item.kind === 'sequence' && footerText && !(item.body || '').trimEnd().endsWith(footerText) ? footerText : '';
+  const meta = [['To', escHtml(item.to_email || '')], [whenKey[0], formatDate(whenKey[1])],
+                ['Campaign', ctx && ctx.campaign ? escHtml(ctx.campaign) : '']];
+  if (item.error && !why) meta.push(['Reason', escHtml(item.error)]);
+  const body = editing
+    ? '<label class="form-label" for="desk-subject">Subject</label>' +
+      '<input id="desk-subject" class="desk-edit-subject" value="' + escHtml(unsaved.subject) + '"' + fixedSubject + ' oninput="deskKeep()">' +
+      '<label class="form-label" for="desk-body">Body</label>' +
+      '<textarea id="desk-body" class="desk-edit-body" rows="14" oninput="deskKeep()">' + escHtml(unsaved.body) + '</textarea>'
+    : '<dl class="ui-details ob-meta">' + meta.map(([k, v]) =>
+        '<div><dt>' + escHtml(k) + '</dt><dd>' + (v || uiDash('')) + '</dd></div>').join('') + '</dl>' +
+      '<div class="ob-body">' + (item.body ? escHtml(item.body) : uiDash('')) + '</div>';
+  const footer = added
+    ? '<div class="desk-footer" title="Added when it sends (compliance in sellbird.yaml)">' + escHtml(added) + '</div>' : '';
+  const cardActions = pending && !editing
+    ? '<div class="ob-card-actions"><button class="btn btn-sm btn-ghost" onclick="deskEdit(' + id + ')">Edit</button></div>' : '';
+  const email = uiCard({title: 'Email', action: step ? uiBadge('neutral', step) : '', body: body + footer + cardActions});
+  const side = ctx ? renderDeskContext(ctx)
+    : uiCard({title: 'Prospect', body: uiEmpty('No prospect details here',
+        pending ? 'Sellbird didn’t record what this draft was built on.' : 'Prospect details are shown for emails waiting on you.')});
+  return '<div class="ui-page">' + head + paused + held +
+    '<div class="ui-grid ob-email">' + email + '<div class="ui-stack">' + side + '</div></div></div>';
 }
 
 // ── Approval or autopilot ──
@@ -2194,73 +2434,11 @@ function heldReason(item) {
   return why.charAt(0).toUpperCase() + why.slice(1);
 }
 
-function renderDesk(items, i) {
-  const cur = items[i];
-  const rail = items.map((it, n) => {
-    const who = it.context && it.context.contact ? it.context.contact : it.to_email;
-    const parts = String(who || '').split(/[\s@.]+/);
-    return '<div class="desk-item ' + (n === i ? 'active' : '') + '" onclick="deskGo(' + n + ')">' +
-      '<span class="avatar">' + initials(parts[0], parts[1]) + '</span>' +
-      '<div class="di-text"><div class="to">' + escHtml(who) +
-        (heldReason(it) ? ' <span class="tag t-bad" title="Sellbird held this instead of sending it">Held</span>' : '') +
-        '</div>' +
-      '<div class="sub">' + escHtml(it.subject || '(no subject)') + '</div></div>' +
-    '</div>';
-  }).join('');
-
-  const editing = _desk.editing === cur.id;
-  const unsaved = (editing && _desk.unsaved) || {subject: cur.subject || '', body: cur.body || ''};
-  // A reply keeps its subject: Gmail threads by it.
-  const fixedSubject = cur.kind === 'reply'
-    ? ' readonly title="A reply keeps its subject so it stays in the thread"' : '';
-  const draft = editing
-    ? '<input id="desk-subject" class="desk-edit-subject" value="' + escHtml(unsaved.subject) + '"' +
-        fixedSubject + ' oninput="deskKeep()">' +
-      '<textarea id="desk-body" class="desk-edit-body" rows="14" oninput="deskKeep()">' +
-        escHtml(unsaved.body) + '</textarea>'
-    : '<div class="subject">' + escHtml(cur.subject || '(no subject)') + '</div>' +
-      '<div class="body">' + escHtml(cur.body) + '</div>';
-  // Cold email leaves with the footer underneath; show it as it will go out.
-  // Not added again when the body already ends with it, as in the Sender.
-  const added = cur.kind === 'sequence' && !(cur.body || '').trimEnd().endsWith(_desk.footer)
-    ? _desk.footer : '';
-  const footer = added
-    ? '<div class="desk-footer" title="Added when it sends (compliance in sellbird.yaml)">' +
-        escHtml(added) + '</div>' : '';
-  const actions = editing
-    ? '<button class="btn btn-primary" onclick="deskSave(' + jsq(cur.id) + ')">Save</button>' +
-      '<button class="btn btn-secondary" onclick="deskEdit(null)">Cancel</button>'
-    : '<button class="btn btn-primary" onclick="outboxAct(' + jsq(cur.id) + ',\'approve\')">' +
-        'Approve <kbd>A</kbd></button>' +
-      '<button class="btn btn-secondary" onclick="deskEdit(' + jsq(cur.id) + ')">' +
-        'Edit <kbd>E</kbd></button>' +
-      '<button class="btn btn-secondary" onclick="outboxAct(' + jsq(cur.id) + ',\'reject\')">' +
-        'Reject <kbd>R</kbd></button>';
-
-  return '<div class="desk">' +
-    '<div class="desk-list">' + rail + '</div>' +
-    '<div class="desk-pane">' +
-      '<div class="to-line">To <b>' + escHtml(cur.to_email) + '</b>' +
-        '<span class="tag">' + (cur.kind === 'reply' ? 'Reply' : 'Email ' + escHtml(String(cur.step))) + '</span>' +
-        '<span class="muted">sends ' + formatDate(cur.send_at) + '</span></div>' +
-      renderDeskContext(cur.context) +
-      (heldReason(cur)
-        ? '<div class="banner wait desk-held">' + icon('alert') + '<div><b>Sellbird held this instead of sending it</b>' +
-          '<div>' + escHtml(heldReason(cur)) + '. Read it before approving: text from a website or an ' +
-          'email can try to steer what Sellbird writes.</div></div></div>'
-        : '') +
-      draft + footer +
-      '<div class="desk-actions">' + actions +
-        '<span class="muted" style="font-size:12px;margin-left:auto">' +
-          (i + 1) + ' of ' + items.length + '</span>' +
-      '</div>' +
-    '</div></div>';
-}
-
 function deskEdit(id) {
   _desk.editing = id;
   _desk.unsaved = null;
-  document.getElementById('outbox-desk').innerHTML = renderDesk(_desk.items, _desk.i);
+  if (id !== null && id !== undefined) _desk.open = id;
+  renderOutboxEmail();
   if (id) document.getElementById('desk-body').focus();
 }
 
@@ -2303,36 +2481,52 @@ async function deskSave(id) {
   }
 }
 
+// Move to another pending email. Stops at the ends; never wraps.
 function deskGo(n) {
   if (n < 0 || n >= _desk.items.length || deskBusy()) return;
   _desk.i = n;
-  document.getElementById('outbox-desk').innerHTML = renderDesk(_desk.items, n);
+  _desk.open = _desk.items[n].id;
+  renderOutboxEmail();
 }
 
-// Keyboard review. Ignored while typing into a field, so Settings still works.
-document.addEventListener('keydown', e => {
+// Keyboard review on an email's page: A approve, R reject, E edit, J/K next
+// and previous pending email. Nothing happens while typing in a field, so
+// editing a draft (or Settings) never approves or rejects it.
+function outboxKey(e) {
   if (currentTab !== 'outbox' || e.metaKey || e.ctrlKey || e.altKey) return;
-  // Mid-edit, A would approve the stored draft, not what's typed. Only
-  // Escape (cancel) works until the edit is saved or cancelled.
+  const stop = () => { if (e.preventDefault) e.preventDefault(); };
+  const t = e.target || {};
+  const typing = /^(input|textarea|select)$/i.test(t.tagName || '') || !!t.isContentEditable;
+  const k = String(e.key || '').toLowerCase();
   if (_desk.editing) {
-    const typing = /^(input|textarea)$/i.test(e.target.tagName || '');
-    if (e.key === 'Escape') { e.preventDefault(); deskEdit(null); }
-    else if (!typing && 'jkare'.includes(e.key.toLowerCase())) { e.preventDefault(); deskBusy(); }
+    // Mid-edit, A would approve the stored draft, not what's typed. Only
+    // Escape (cancel) works until the edit is saved or cancelled.
+    if (e.key === 'Escape') { stop(); deskEdit(null); }
+    else if (!typing && 'jkare'.includes(k) && k) { stop(); deskBusy(); }
     return;
   }
-  const tag = (e.target.tagName || '').toLowerCase();
-  if (tag === 'input' || tag === 'textarea' || e.target.isContentEditable) return;
-  const cur = _desk.items[_desk.i];
-  const k = e.key.toLowerCase();
-  if (k === 'j') { e.preventDefault(); deskGo(_desk.i + 1); }
-  else if (k === 'k') { e.preventDefault(); deskGo(_desk.i - 1); }
-  else if (k === 'a' && cur) { e.preventDefault(); outboxAct(cur.id, 'approve'); }
-  else if (k === 'r' && cur) { e.preventDefault(); outboxAct(cur.id, 'reject'); }
-  else if (k === 'e' && cur) { e.preventDefault(); deskEdit(cur.id); }
-});
+  if (typing || !k) return;
+  const at = _desk.items.findIndex(p => String(p.id) === String(_desk.open));
+  if (at < 0) return;   // only on a pending email's page
+  _desk.i = at;
+  const cur = _desk.items[at];
+  if (k === 'j') { stop(); deskGo(at + 1); }
+  else if (k === 'k') { stop(); deskGo(at - 1); }
+  else if (k === 'a') { stop(); outboxAct(cur.id, 'approve'); }
+  else if (k === 'r') { stop(); outboxAct(cur.id, 'reject'); }
+  else if (k === 'e') { stop(); deskEdit(cur.id); }
+}
+
+document.addEventListener('keydown', outboxKey);
 
 async function outboxAct(id, action) {
   if (deskBusy()) return;
+  // Acting on the open email moves the page on to the next one waiting.
+  if (String(_desk.open) === String(id)) {
+    const at = _desk.items.findIndex(p => String(p.id) === String(id));
+    const next = _desk.items[at + 1] || _desk.items[at - 1];
+    _desk.open = next ? next.id : null;
+  }
   const data = await api('/api/outbox/' + encodeURIComponent(id) + '/' + action, {method: 'POST'});
   if (data && data.success) showToast(action === 'approve' ? 'Approved — will send on schedule.' : 'Rejected.', 'success');
   else showToast(failMsg(data, 'Action failed.'), 'error');
@@ -3140,11 +3334,13 @@ async function setConvoStatus(id, status) {
 }
 
 // ── Inboxes: the main mailbox and the extra ones you connected ──
+// A list (summary, table) and, for one inbox, its own page. Adding an inbox
+// stays a dialog, as the design draws it.
 
 const INBOX_STATE = {
-  sending: ['Sending', 't-good'],
-  paused: ['Paused', 't-waiting'],
-  not_connected: ['Not connected', 't-bad'],
+  sending: ['Sending', 'success'],
+  paused: ['Paused', 'warning'],
+  not_connected: ['Not connected', 'danger'],
 };
 const INBOX_KINDS = {
   gmail: ['Gmail', 'Google Workspace or Gmail. Sign in with Google in your browser.'],
@@ -3153,20 +3349,23 @@ const INBOX_KINDS = {
 };
 let _inboxes = null;
 let _inboxPoll = null;
+let _inboxOpen = null;   // id of the inbox whose page is showing
 
 function inboxBadge(ib) {
-  const [label, tone] = INBOX_STATE[ib.state] || [ib.state, 't-idle'];
-  return '<span class="badge ' + tone + '">' + escHtml(label) + '</span>';
+  const [label, tone] = own(INBOX_STATE, ib && ib.state) || [String((ib && ib.state) || 'Unknown'), 'neutral'];
+  return uiBadge(tone, label, tone === 'success' ? 'check' : '');
 }
 
+// Cold emails sent today against the inbox's cap; a dash when either is unknown.
 function inboxMeter(ib) {
-  const cap = Math.max(1, Number(ib.cold_cap) || 0);
-  const sent = Number(ib.cold_sent_today) || 0;
+  const cap = Number(ib && ib.cold_cap), sent = Number(ib && ib.cold_sent_today);
+  if (!Number.isFinite(cap) || cap <= 0 || !Number.isFinite(sent)) {
+    return '<span class="ib-meter"><span class="ib-bar"><i style="width:0%"></i></span><span class="ib-n">' + uiDash('') + '</span></span>';
+  }
   const pct = Math.min(100, Math.round(sent / cap * 100));
-  return '<div class="inbox-meter"><div class="line"><span>Cold emails today</span><span>' +
-    sent + ' / ' + Number(ib.cold_cap) + '</span></div>' +
-    '<div class="progress-bar"><div class="progress-fill ' + (pct >= 100 ? 'yellow' : 'green') +
-    '" style="width:' + pct + '%"></div></div></div>';
+  return '<span class="ib-meter" title="' + sent + ' of ' + cap + ' cold emails today"><span class="ib-bar' + (pct >= 100 ? ' is-full' : '') +
+    '" role="meter" aria-valuemin="0" aria-valuemax="' + cap + '" aria-valuenow="' + sent + '"><i style="width:' + pct + '%"></i></span>' +
+    '<span class="ib-n">' + sent + ' / ' + cap + '</span></span>';
 }
 
 function inboxDate(iso) {
@@ -3175,64 +3374,122 @@ function inboxDate(iso) {
   return isNaN(d) ? iso : d.toLocaleDateString(undefined, {month: 'short', day: 'numeric', year: 'numeric'});
 }
 
+function inboxProvider(ib) {
+  const p = ib && ib.provider === 'google' ? 'gmail' : ib && ib.provider;
+  const kind = own(INBOX_KINDS, p);
+  return kind ? (p === 'smtp' ? 'SMTP + IMAP' : kind[0]) : (p || '');
+}
+
+function inboxSub(ib) {
+  return [ib.name, ib.main ? 'Main mailbox' : inboxProvider(ib)].filter(Boolean).join(' · ');
+}
+
+function inboxCount(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function inboxSummary(data) {
+  const d = data || {};
+  const list = d.inboxes || [];
+  const sending = list.filter(i => i.state === 'sending');
+  const capToday = sending.reduce((n, i) => n + (Number(i.cold_cap) || 0), 0);
+  const limit = Number(d.max_daily_sends);
+  const daily = capToday && Number.isFinite(limit) ? Math.min(capToday, limit) : (capToday || (Number.isFinite(limit) ? limit : 0));
+  return uiMetricStrip([
+    {label: 'Inboxes', value: list.length, sub: sending.length + ' sending'},
+    {label: 'Cold emails sent today', value: list.reduce((n, i) => n + (Number(i.cold_sent_today) || 0), 0),
+     sub: daily ? 'of ' + daily + ' daily limit' : 'no daily limit set'},
+    {label: 'First emails waiting', value: list.reduce((n, i) => n + (Number(i.first_emails_waiting) || 0), 0),
+     sub: 'approved, not yet sent'},
+  ]);
+}
+
+function inboxesTable(inboxes) {
+  const columns = [
+    {key: 'address', header: 'Inbox', render: ib => '<span class="ib-who"><span class="ib-avatar" aria-hidden="true">' +
+      escHtml(String(ib.address || '?').charAt(0).toUpperCase()) + '</span><span><span class="ui-cell-main">' +
+      escHtml(ib.address || '(main mailbox)') + '</span><span class="ui-cell-sub">' + uiDash(inboxSub(ib)) + '</span></span></span>'},
+    {key: 'state', header: '', render: ib => inboxBadge(ib)},
+    {key: 'cold', header: 'Cold emails today', render: ib => inboxMeter(ib)},
+    {key: 'waiting', header: 'Waiting', align: 'right',
+     render: ib => '<span class="ui-strong">' + uiDash(inboxCount(ib.first_emails_waiting)) + '</span>'},
+    {key: 'provider', header: 'Provider', render: ib => uiDash(inboxProvider(ib))},
+    {key: 'menu', header: '', align: 'right', render: (ib, i) => {
+      const id = jsq(ib.id);
+      const items = [{label: 'Open inbox', js: 'openInbox(' + i + ')'}];
+      if (!ib.main) {
+        items.push({label: 'Check connection', js: 'testInbox(' + id + ')'});
+        items.push(ib.paused_reason
+          ? {label: 'Resume sending', js: 'inboxAction(' + id + ',\'resume\')'}
+          : {label: 'Pause', js: 'inboxAction(' + id + ',\'pause\')'});
+      }
+      return uiRowMenu(items);
+    }},
+  ];
+  return uiTable({columns, rows: inboxes || [], rowKey: ib => ib.id, empty: 'No inboxes connected yet',
+                  onRow: (ib, i) => 'openInbox(' + i + ')'});
+}
+
+function inboxWhyCard(data) {
+  const per = Number(data && data.per_inbox_daily_cap), max = Number(data && data.max_daily_sends);
+  const col = (t, p) => '<div><div class="ib-why__t">' + escHtml(t) + '</div><div class="ib-why__p">' + escHtml(p) + '</div></div>';
+  return uiCard({cls: 'ui-card--subdued', title: 'Why add another inbox?',
+    action: '<button class="btn btn-secondary btn-sm" onclick="openAddInbox()">' + icon('plus') + 'Add inbox</button>',
+    body: '<div class="ib-why">' +
+      col('Send more each day', 'Each inbox sends up to ' + (Number.isFinite(per) ? per : '—') +
+        ' cold emails a day. Two inboxes, twice as many, all under your daily total' +
+        (Number.isFinite(max) ? ' of ' + max : '') + '.') +
+      col('Protect your main address', 'Send cold email from a second domain, so a bad week never touches your everyday mail.') +
+      col('Pick per campaign', 'Choose which inboxes each campaign sends from. Replies always come back to the inbox that started the thread.') +
+    '</div>'});
+}
+
 async function loadInboxes() {
   const el = document.getElementById('inboxes-list');
   const actions = document.getElementById('inboxes-actions');
   const data = await api('/api/inboxes');
-  if (!data) { el.innerHTML = offlineState(); return; }
+  if (!data) { inboxShowList(true); el.innerHTML = offlineState(); return; }
   _inboxes = data;
   if (!data.native) {
     actions.innerHTML = '';
-    el.innerHTML = emptyState(icon('inboxes'), 'Instantly sends for you',
+    inboxShowList(true);
+    el.innerHTML = '<div class="ui-card">' + uiEmpty('Instantly sends for you',
       'Sending through several of your own inboxes works with Gmail, Microsoft 365 or SMTP. ' +
-      'Set channels.email.provider in sellbird.yaml to one of those to use it.');
+      'Set channels.email.provider in sellbird.yaml to one of those to use it.') + '</div>';
     return;
   }
-  actions.innerHTML = '<button class="btn btn-primary" onclick="openAddInbox()">' + icon('plus') +
-    'Add inbox</button>';
+  actions.innerHTML = '<button class="btn btn-primary" onclick="openAddInbox()">' + icon('plus') + 'Add inbox</button>';
 
   let html = '';
   if (data.sending_paused) {
-    html += '<div class="notice wait"><b>All sending is paused:</b> ' + escHtml(data.sending_paused) +
-      '. Resume it on the Outbox tab.</div>';
+    html += uiBanner({tone: 'warning', iconName: 'alert', title: 'All sending is paused',
+      body: data.sending_paused + '. Resume it on the Outbox tab.',
+      actions: '<button class="btn btn-secondary btn-sm" onclick="goTab(\'outbox\')">Open Outbox</button>'});
   }
-  const list = data.inboxes || [];
-  const sending = list.filter(i => i.state === 'sending');
-  const capToday = sending.reduce((n, i) => n + (Number(i.cold_cap) || 0), 0);
-  const sentToday = list.reduce((n, i) => n + (Number(i.cold_sent_today) || 0), 0);
-  const waiting = list.reduce((n, i) => n + (Number(i.first_emails_waiting) || 0), 0);
-  html += '<div class="inbox-summary">' +
-    '<span><b>' + list.length + '</b> ' + (list.length === 1 ? 'inbox' : 'inboxes') + ', <b>' + sending.length + '</b> sending</span>' +
-    '<span><b>' + sentToday + '</b>' + (capToday ? ' of <b>' + Math.min(capToday, Number(data.max_daily_sends)) + '</b>' : '') + ' cold emails sent today</span>' +
-    '<span><b>' + waiting + '</b> first emails waiting to go</span></div>';
-
-  html += '<div class="inbox-list">';
-  list.forEach((ib, i) => {
-    const letter = (ib.address || '?').charAt(0).toUpperCase();
-    const sub = [ib.name, ib.main ? 'Main mailbox' : (INBOX_KINDS[ib.provider === 'google' ? 'gmail' : ib.provider] || [ib.provider])[0]]
-      .filter(Boolean).join(' · ');
-    html += '<button class="inbox-row" onclick="openInbox(' + i + ')" aria-label="Open ' + escHtml(ib.address || 'main mailbox') + '">' +
-      '<span class="inbox-avatar" aria-hidden="true">' + escHtml(letter) + '</span>' +
-      '<span class="inbox-who"><div class="addr">' + escHtml(ib.address || '(main mailbox)') + '</div>' +
-      '<div class="sub">' + escHtml(sub) + '</div></span>' +
-      inboxBadge(ib) + inboxMeter(ib) +
-      '<span class="inbox-waiting"><b>' + Number(ib.first_emails_waiting) + '</b>waiting</span>' +
-      icon('chevron', 'chev') + '</button>';
-  });
-  html += '</div>';
-
-  if (!data.several) {
-    html += '<div class="card"><div class="card-title">Why add another inbox?</div><div class="inbox-help">' +
-      '<div class="inset"><h4>Send more each day</h4><p>Each inbox sends up to ' + Number(data.per_inbox_daily_cap) +
-      ' cold emails a day. Two inboxes, twice as many, all under your daily total of ' + Number(data.max_daily_sends) + '.</p></div>' +
-      '<div class="inset"><h4>Protect your main address</h4><p>Send cold email from a second domain, so a bad week never touches your everyday mail.</p></div>' +
-      '<div class="inset"><h4>Pick per campaign</h4><p>Choose which inboxes each campaign sends from. Replies always come back to the inbox that started the thread.</p></div>' +
-      '</div><div class="btn-group"><button class="btn btn-secondary" onclick="openAddInbox()">' + icon('plus') + 'Add inbox</button></div></div>';
-  }
+  html += inboxSummary(data) + inboxesTable(data.inboxes || []);
+  if (!data.several) html += inboxWhyCard(data);
   el.innerHTML = html;
+
+  const list = data.inboxes || [];
+  const at = _inboxOpen === null ? -1 : list.findIndex(i => i.id === _inboxOpen);
+  if (at >= 0) renderInboxPage(at);
+  else { _inboxOpen = null; inboxShowList(true); }
 }
 
-// The dialog: one inbox's detail, or adding one.
+function inboxShowList(on) {
+  ['inboxes-head', 'inboxes-list'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle('ib-hide', !on);
+  });
+  const page = document.getElementById('inbox-page');
+  if (page) {
+    page.classList.toggle('ib-hide', on);
+    if (on) page.innerHTML = '';
+  }
+}
+
+// The dialog: adding an inbox.
 
 function inboxDialog(html) {
   const d = document.getElementById('inbox-dialog');
@@ -3253,73 +3510,121 @@ function inboxDialogHead(title, sub, extra) {
     '<button class="btn btn-ghost btn-sm btn-icon" onclick="closeInboxDialog()" aria-label="Close">' + icon('close') + '</button></div>';
 }
 
-function openInbox(i) {
-  const ib = (_inboxes && _inboxes.inboxes || [])[i];
-  if (!ib) return;
-  const campaigns = (_inboxes.campaigns || []);
-  const pools = _inboxes.pools || {};
-  const using = campaigns.filter(c => (pools[c.id] || []).includes(ib.id));
-  const everyInbox = campaigns.filter(c => !pools[c.id]);
-  let body = '';
-  if (ib.state === 'not_connected') {
-    body += '<div class="notice bad"><b>Not connected.</b> ' +
-      escHtml(ib.connect_hint || 'Sellbird can\'t sign in to it from this computer. Check the connection to see why, or remove it and add it again.') + '</div>';
+// One inbox on its own page: status, today's numbers, the campaigns using
+// it, and its settings. `data` is the /api/inboxes payload (campaigns, pools,
+// per_inbox_daily_cap, can_connect).
+function inboxDetailPage(ib, data) {
+  const d = data || {};
+  const campaigns = d.campaigns || [];
+  const pools = d.pools || {};
+  const id = jsq(ib.id);
+  const cap = inboxCount(ib.cold_cap), sent = inboxCount(ib.cold_sent_today);
+  const dl = items => '<dl class="ui-details">' + items.map(([k, v]) =>
+    '<div><dt>' + escHtml(k) + '</dt><dd>' + (v || uiDash('')) + '</dd></div>').join('') + '</dl>';
+
+  let notes = '';
+  if (ib.state === 'not_connected' && !(ib.main && (ib.provider === 'gmail' || ib.provider === 'microsoft'))) {
+    notes += uiBanner({tone: 'danger', iconName: 'alert', title: 'Not connected',
+      body: ib.connect_hint || 'Sellbird can\'t sign in to it from this computer. Check the connection to see why, or remove it and add it again.'});
   }
-  if (ib.paused_reason) {
-    body += '<div class="notice wait"><b>Paused:</b> ' + escHtml(ib.paused_reason) + '</div>';
+  if (ib.paused_reason) notes += uiBanner({tone: 'warning', iconName: 'alert', title: 'Paused', body: ib.paused_reason});
+
+  let actions = '';
+  if (!ib.main) {
+    actions = (ib.paused_reason
+      ? '<button class="btn btn-secondary" onclick="inboxAction(' + id + ',\'resume\')">Resume sending</button>'
+      : '<button class="btn btn-secondary" onclick="inboxAction(' + id + ',\'pause\')"' + (ib.state === 'not_connected' ? ' disabled' : '') + '>Pause inbox</button>') +
+      '<button class="btn btn-primary" onclick="testInbox(' + id + ')">Check connection</button>';
   }
-  body += '<div class="modal-stats">' +
-    '<div class="inset"><div class="k">Cold today</div><div class="v">' + Number(ib.cold_sent_today) + ' / ' + Number(ib.cold_cap) + '</div></div>' +
-    '<div class="inset"><div class="k">First emails waiting</div><div class="v">' + Number(ib.first_emails_waiting) + '</div></div>' +
-    '<div class="inset"><div class="k">Warming up since</div><div class="v">' + (ib.warmup_started_at ? escHtml(inboxDate(ib.warmup_started_at)) : '<span class="muted">Established</span>') + '</div></div>' +
-    '</div>';
-  body += '<div class="modal-section"><h4>Campaigns sending from it</h4>';
-  if (!campaigns.length) body += '<p>No campaigns yet.</p>';
+  const head = uiPageHead({
+    title: ib.address || 'Main mailbox', sub: [ib.name, ib.main ? 'Main mailbox' : '', inboxProvider(ib)].filter(Boolean).join(' · '),
+    crumbs: [{label: 'Inboxes', js: 'closeInbox()'}, {label: ib.address || 'Main mailbox'}], actions,
+  }).replace('</h2>', ' ' + inboxBadge(ib) + '</h2>');
+
+  const strip = uiMetricStrip([
+    {label: 'Sent today', value: sent, sub: cap !== null ? 'of ' + cap + ' cold emails' : ''},
+    {label: 'Waiting', value: inboxCount(ib.first_emails_waiting), sub: 'first emails, approved, not yet sent'},
+    {label: 'Warming up since', value: ib.warmup_started_at ? inboxDate(ib.warmup_started_at) : (ib.main ? null : 'Established'),
+     sub: ib.warmup_started_at ? 'starts lower, ramps up' : ''},
+  ]);
+
+  let using = '';
+  if (!campaigns.length) using = uiEmpty('No campaigns yet');
   else {
-    const names = using.concat(everyInbox).map(c => escHtml(c.name || 'Untitled'));
-    const shown = names.slice(0, 6).join(', ') + (names.length > 6 ? ', and ' + (names.length - 6) + ' more' : '');
-    body += names.length ? '<p>' + shown + '</p>' : '<p>None. Every campaign has chosen other inboxes.</p>';
-    if (everyInbox.length) body += '<p class="form-hint">Campaigns that haven\'t chosen inboxes send from all of them.</p>';
+    const mine = campaigns.filter(c => (pools[c.id] || []).includes(ib.id));
+    const every = campaigns.filter(c => !pools[c.id]);
+    const rows = mine.map(c => ({name: c.name, how: 'Chose this inbox'}))
+      .concat(every.map(c => ({name: c.name, how: 'Sends from every inbox'})));
+    using = uiTable({columns: [{key: 'name', header: 'Campaign', render: r => uiDash(r.name || 'Untitled')},
+                               {key: 'how', header: 'How'}],
+                     rows, empty: 'None. Every campaign has chosen other inboxes.'}) +
+      (every.length ? '<div class="form-hint">Campaigns that haven\'t chosen inboxes send from all of them.</div>' : '');
   }
-  body += '</div>';
+  const left = uiCard({title: 'Campaigns sending from it', body: using});
+
+  let right = uiCard({title: 'Setup', body: dl([
+    ['Address', escHtml(ib.address || '')], ['Provider', escHtml(inboxProvider(ib))],
+    ['Sender name', escHtml(ib.name || '')],
+    ['Daily cap', cap !== null ? cap + ' cold emails' + (ib.cap_is_yours ? '' : ' (default)') : ''],
+    ['Warming up since', ib.warmup_started_at ? escHtml(inboxDate(ib.warmup_started_at)) : ''],
+  ])});
 
   if (ib.main) {
     const kind = ib.provider === 'gmail' || ib.provider === 'microsoft' ? ib.provider : '';
+    let connect = '';
     if (ib.state === 'not_connected' && kind) {
-      const can = (_inboxes.can_connect || {})[kind];
-      body = '<div id="main-status"></div>' + (can
-        ? '<div class="notice bad"><b>Not connected.</b> Sign in to the mailbox Sellbird sends from.</div>' +
-          '<button class="btn btn-primary" id="main-go" onclick="connectMainMailbox(\'' + kind + '\')">Sign in with ' +
-          (kind === 'gmail' ? 'Google' : 'Microsoft') + '</button><div style="height:16px"></div>'
-        : connectSetupNotice(kind)) + body.replace(/<div class="notice bad"><b>Not connected.<\/b>[\s\S]*?<\/div>/, '');
+      const can = (d.can_connect || {})[kind];
+      connect = uiCard({title: 'Connect', body: '<div id="main-status"></div>' + (can
+        ? uiBanner({tone: 'danger', iconName: 'alert', title: 'Not connected', body: 'Sign in to the mailbox Sellbird sends from.'}) +
+          '<div><button class="btn btn-primary" id="main-go" onclick="connectMainMailbox(\'' + kind + '\')">Sign in with ' +
+          (kind === 'gmail' ? 'Google' : 'Microsoft') + '</button></div>'
+        : connectSetupNotice(kind))});
     }
-    body += '<div class="modal-section"><h4>Settings</h4><p>Your main mailbox comes from sellbird.yaml: ' +
+    right = connect + right + uiCard({title: 'Settings', body: '<p class="ib-note">Your main mailbox comes from sellbird.yaml: ' +
       'its address is persona.email, its daily cap is channels.email.per_inbox_daily_cap, and pausing it pauses ' +
-      'all sending, on the Outbox tab.</p></div>';
-    inboxDialog(inboxDialogHead(escHtml(ib.address || 'Main mailbox'), inboxBadge(ib) + ' Main mailbox') +
-      '<div class="modal-body">' + body + '</div>');
-    return;
+      'all sending, on the Outbox tab.</p>'});
+  } else {
+    right += uiCard({title: 'Limits', body:
+      '<label class="form-label" for="ib-cap">Daily cold-email cap</label>' +
+      '<div class="inline-edit"><input class="form-input" id="ib-cap" type="number" min="1" max="500" inputmode="numeric" placeholder="Default (' +
+        uiCountText(d.per_inbox_daily_cap) + ')" value="' + (ib.cap_is_yours && cap !== null ? cap : '') + '">' +
+      '<button class="btn btn-secondary" onclick="saveInboxCap(' + id + ')">Save</button></div>' +
+      '<div class="form-hint">Leave empty for the default. Warming inboxes start lower on their own.</div>' +
+      '<label class="form-label" for="ib-name">Sender name</label>' +
+      '<div class="inline-edit"><input class="form-input" id="ib-name" maxlength="100" placeholder="Your persona name" value="' + escHtml(ib.name || '') + '">' +
+      '<button class="btn btn-secondary" onclick="saveInboxName(' + id + ')">Save</button></div>' +
+      '<div class="form-hint">The name people see in From.</div>'});
+    right += uiCard({title: 'Remove this inbox', body:
+      '<p class="ib-note">Sellbird stops sending from it, and threads it started end. Its sign-in stays in your keychain.</p>' +
+      '<div class="inline-edit"><input class="form-input" id="ib-confirm" placeholder="Type ' + escHtml(ib.address || '') + ' to confirm">' +
+      '<button class="btn btn-danger" onclick="removeInbox(' + id + ')">Remove</button></div>'});
   }
-  const id = jsq(ib.id);
-  body += '<div class="modal-section"><h4>Daily cold-email cap</h4>' +
-    '<div class="inline-edit"><input class="form-input" id="ib-cap" type="number" min="1" max="500" inputmode="numeric" placeholder="Default (' +
-    Number(_inboxes.per_inbox_daily_cap) + ')" value="' + (ib.cap_is_yours ? Number(ib.cold_cap) : '') + '">' +
-    '<button class="btn btn-secondary" onclick="saveInboxCap(' + id + ')">Save</button></div>' +
-    '<div class="form-hint">Leave empty for the default. Warming inboxes start lower on their own.</div></div>';
-  body += '<div class="modal-section"><h4>Sender name</h4>' +
-    '<div class="inline-edit"><input class="form-input" id="ib-name" maxlength="100" placeholder="Your persona name" value="' + escHtml(ib.name || '') + '">' +
-    '<button class="btn btn-secondary" onclick="saveInboxName(' + id + ')">Save</button></div>' +
-    '<div class="form-hint">The name people see in From.</div></div>';
-  body += '<div class="modal-section"><h4>Remove this inbox</h4><p>Sellbird stops sending from it, and threads it started end. Its sign-in stays in your keychain.</p>' +
-    '<div class="inline-edit" style="margin-top:8px"><input class="form-input" id="ib-confirm" placeholder="Type ' + escHtml(ib.address) + ' to confirm">' +
-    '<button class="btn btn-danger" onclick="removeInbox(' + id + ')">Remove</button></div></div>';
+  return '<div class="ui-page">' + head + notes + strip +
+    '<div class="ui-grid ib-grid">' + left + '<div class="ui-stack">' + right + '</div></div></div>';
+}
 
-  const pauseBtn = ib.paused_reason
-    ? '<button class="btn btn-primary" onclick="inboxAction(' + id + ',\'resume\')">Resume sending</button>'
-    : '<button class="btn btn-secondary" onclick="inboxAction(' + id + ',\'pause\')"' + (ib.state === 'not_connected' ? ' disabled' : '') + '>Pause</button>';
-  inboxDialog(inboxDialogHead(escHtml(ib.address), inboxBadge(ib) + ' ' + escHtml(ib.name || '')) +
-    '<div class="modal-body">' + body + '</div>' +
-    '<div class="modal-foot"><button class="btn btn-ghost" onclick="testInbox(' + id + ')">Check connection</button>' + pauseBtn + '</div>');
+function uiCountText(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && v !== null && v !== '' && v !== undefined ? String(n) : '—';
+}
+
+function renderInboxPage(i) {
+  const ib = (_inboxes && _inboxes.inboxes || [])[i];
+  if (!ib) return;
+  _inboxOpen = ib.id;
+  inboxShowList(false);
+  document.getElementById('inbox-page').innerHTML = inboxDetailPage(ib, _inboxes);
+}
+
+function openInbox(i) {
+  renderInboxPage(i);
+  window.scrollTo(0, 0);
+}
+
+function closeInbox() {
+  if (_inboxPoll) { clearInterval(_inboxPoll); _inboxPoll = null; }
+  _inboxOpen = null;
+  inboxShowList(true);
 }
 
 async function inboxPost(path, body, done, keepOpen) {

@@ -248,19 +248,21 @@
 </div>
 
 <!-- Outbox: the decisions desk -->
-<div id="outbox" class="section">
-  <div class="section-head">
-    <div>
-      <h2>Outbox</h2>
-      <p>Emails waiting for you. Read one, decide, move on &mdash;
-         <kbd>A</kbd> approve, <kbd>R</kbd> reject, <kbd>E</kbd> edit, <kbd>J</kbd>/<kbd>K</kbd> to move.</p>
+<div id="outbox" class="section"><div class="ui-page">
+  <div class="ui-pagehead" id="outbox-head">
+    <div class="ui-pagehead__text">
+      <h2 class="ui-pagehead__title">Outbox</h2>
+      <div class="ui-pagehead__sub">Emails waiting for you. Read one, decide, move on.
+         <kbd>A</kbd> approve, <kbd>R</kbd> reject, <kbd>E</kbd> edit, <kbd>J</kbd>/<kbd>K</kbd> to move.</div>
     </div>
-    <div class="page-actions" id="outbox-actions"></div>
+    <div class="ui-pagehead__actions" id="outbox-actions"></div>
   </div>
   <div id="outbox-banner"></div>
-  <div id="outbox-desk"></div>
+  <div id="outbox-summary"></div>
+  <div id="outbox-tabs" class="ob-tabs"></div>
   <div id="outbox-list"></div>
-</div>
+  <div id="outbox-desk" class="ob-hide"></div>
+</div></div>
 
 <!-- Conversations -->
 <div id="conversations" class="section">
@@ -269,16 +271,17 @@
 </div>
 
 <!-- Inboxes -->
-<div id="inboxes" class="section">
-  <div class="section-head">
-    <div>
-      <h2>Inboxes</h2>
-      <p>The email addresses Sellbird sends from. Each one sends a limited number of cold emails a day, so more inboxes means more emails out. Replies stay on the inbox that started the thread.</p>
+<div id="inboxes" class="section"><div class="ui-page">
+  <div class="ui-pagehead" id="inboxes-head">
+    <div class="ui-pagehead__text">
+      <h2 class="ui-pagehead__title">Inboxes</h2>
+      <div class="ui-pagehead__sub">The email addresses Sellbird sends from. Each one sends a limited number of cold emails a day, so more inboxes means more emails out. Replies stay on the inbox that started the thread.</div>
     </div>
-    <div class="page-actions" id="inboxes-actions"></div>
+    <div class="ui-pagehead__actions" id="inboxes-actions"></div>
   </div>
-  <div id="inboxes-list"></div>
-</div>
+  <div id="inboxes-list" class="ui-page"></div>
+  <div id="inbox-page" class="ib-hide"></div>
+</div></div>
 
 <dialog id="inbox-dialog" class="modal" aria-labelledby="inbox-dialog-title"></dialog>
 
