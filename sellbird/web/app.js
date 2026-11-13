@@ -2653,65 +2653,212 @@ async function loadCampaigns() {
   const data = await api('/api/campaigns');
   if (!data) { el.innerHTML = offlineState(); return; }
   _campaigns = data;
+  // The 15-second refresh must not close a row menu someone is using.
+  if (el.querySelector('details.ui-menu[open]')) return;
+  renderCampaigns();
+}
+
+// ── Campaigns: a list, and one page per campaign ──
+
+let _cpOpen = null;       // id of the campaign whose page is open
+let _cpFilter = 'all';
+let _cpOffset = 0;
+const CP_PAGE = 25;
+
+// A status word as a kit badge, toned from the shared STATUS vocabulary.
+function cpBadge(status) {
+  const m = statusMeta(status);
+  const tone = {good: 'success', active: 'info', waiting: 'warning', bad: 'danger'}[m.tone] || 'neutral';
+  return uiBadge(tone, m.label, m.tone === 'good' ? 'check' : '');
+}
+
+// Where a campaign's people stand, counted from their statuses.
+function campaignStats(c) {
+  const rs = (c && c.recipients) || [];
+  const count = st => rs.filter(r => st.includes(r.status)).length;
+  const companies = new Set(rs.map(r => r.company).filter(Boolean));
+  return {
+    prospects: ((c && c.prospect_ids) || []).length, recipients: rs.length, companies: companies.size,
+    waiting: count(['new', 'queued']), contacted: count(['contacted']),
+    replied: count(['replied', 'interested', 'meeting', 'accepted_offer']),
+    interested: count(['interested', 'meeting', 'accepted_offer']),
+  };
+}
+
+// "day 0, +3, +4": when each email goes out, after the one before.
+function campaignCadence(seq) {
+  return (seq || []).map((s, i) => i === 0 ? 'day ' + (Number(s.delay_days) || 0) : '+' + (Number(s.delay_days) || 0)).join(', ');
+}
+
+function cpFilterKey(status) {
+  return status === 'completed' ? 'finished' : (status || 'draft');
+}
+
+function campaignCountTabs(campaigns, active) {
+  const rows = campaigns || [];
+  const n = k => rows.filter(c => cpFilterKey(c.status) === k).length;
+  const items = [{key: 'all', label: 'All', count: rows.length}, {key: 'active', label: 'Active', count: n('active')}];
+  if (n('draft')) items.push({key: 'draft', label: 'Draft', count: n('draft')});
+  items.push({key: 'paused', label: 'Paused', count: n('paused')}, {key: 'finished', label: 'Finished', count: n('finished')});
+  return '<div class="cp-counts" role="tablist">' + items.map(t =>
+    '<button type="button" class="cp-count" role="tab" aria-selected="' + (t.key === active) + '" onclick="setCampaignFilter('
+    + jsq(t.key) + ')">' + escHtml(t.label) + '<span class="cp-count__n">' + escHtml(t.count) + '</span></button>').join('') + '</div>';
+}
+
+// rows carry their index into _campaigns as `_i`, so filtering keeps handlers right.
+function campaignsTable(campaigns) {
+  const rows = (campaigns || []).map((c, i) => Object.assign({_i: i}, c));
+  return uiTable({
+    columns: [
+      {key: 'name', header: 'Campaign', render: c => {
+        const st = campaignStats(c);
+        const firstCo = ((c.recipients || []).find(r => r.company) || {}).company;
+        const sub = st.companies > 1 ? firstCo + ' and ' + (st.companies - 1) + ' more' : (firstCo || 'No contacts yet');
+        return '<span class="ui-cell-main">' + escHtml(c.name || 'Untitled campaign') + '</span>'
+          + '<span class="ui-cell-sub">' + escHtml(sub) + '</span>';
+      }},
+      {key: 'status', header: '', render: c => cpBadge(c.status)},
+      {key: 'prospects', header: 'Prospects', align: 'right', render: c => '<span class="ui-strong">' + campaignStats(c).prospects + '</span>'},
+      {key: 'sequence', header: 'Sequence', render: c => {
+        const n = (c.sequence || []).length;
+        return n ? escHtml(n + (n === 1 ? ' email' : ' emails') + ' · ' + campaignCadence(c.sequence)) : uiDash('');
+      }},
+      {key: 'progress', header: 'Waiting / Contacted / Replied', render: c => {
+        const st = campaignStats(c);
+        return '<span class="cp-nums">' + st.waiting + ' / ' + st.contacted + ' / ' + st.replied + '</span>';
+      }},
+      {key: 'created', header: 'Created', align: 'right', render: c => '<span class="cp-muted">' + (relTime(c.created_at) || uiDash('')) + '</span>'},
+      {key: 'menu', header: '', align: 'right', render: c => uiRowMenu([
+        {label: 'Open campaign', js: 'openCampaign(' + c._i + ')'},
+        {label: 'Feedback on its emails', js: 'fbCampaign(' + c._i + ')'}])},
+    ],
+    rows, rowKey: c => c.id || String(c._i), onRow: c => 'openCampaign(' + c._i + ')',
+    empty: 'No campaigns in this view',
+  });
+}
+
+// The hand-send controls for one person on one step, exactly as before:
+// only offered when Sellbird can't send itself and they can still be emailed.
+function campaignRecipientActions(c, ci, r, ri, s) {
+  if (r.sent_by_hand) {
+    const tick = '<label class="cp-check"><input type="checkbox" checked onchange="markSent(' + ci + ',' + ri + ',this.checked)"> '
+      + '&#10003; Sent by you</label>';
+    if (s === 0) return tick;
+    // Follow-ups are the user's too: Sellbird never emails someone they emailed.
+    return '<button class="btn btn-secondary btn-sm" onclick="openInGmail(' + ci + ',' + s + ',' + ri + ')">Open in Gmail</button>'
+      + '<span class="cp-muted">Sellbird won\'t send follow-ups to people you emailed yourself.</span>';
+  }
+  if (s !== 0) return '';
+  if (!r.can_send_by_hand) {
+    // Sellbird sends here; this only records an email the user already sent.
+    return r.can_mark_sent
+      ? '<label class="cp-check cp-muted"><input type="checkbox" onchange="markSent(' + ci + ',' + ri + ',this.checked)"> '
+        + 'I already emailed ' + escHtml(r.email) + ' myself</label>'
+      : '';
+  }
+  const risky = r.email_status === 'risky' ? uiBadge('warning', 'Catch-all, may bounce') : '';
+  return risky + '<button class="btn btn-secondary btn-sm" onclick="openInGmail(' + ci + ',' + s + ',' + ri + ')">Open in Gmail</button>'
+    + '<label class="cp-check"><input type="checkbox" onchange="markSent(' + ci + ',' + ri + ',this.checked)"> Mark as sent</label>';
+}
+
+function campaignDetailPage(c, ci) {
+  const st = campaignStats(c);
+  const seq = c.sequence || [], rs = c.recipients || [];
+  const sample = rs[0];
+  const n = (k, one, many) => k + ' ' + (k === 1 ? one : many);
+  const head = uiPageHead({
+    title: c.name || 'Untitled campaign',
+    sub: [n(st.prospects, 'prospect', 'prospects'), n(seq.length, 'email', 'emails'),
+          c.created_at ? 'Created ' + relTime(c.created_at) : ''].filter(Boolean).join(' · '),
+    crumbs: [{label: 'Campaigns', js: 'closeCampaign()'}],
+    actions: '<button class="btn btn-secondary" onclick="fbCampaign(' + ci + ')">Feedback</button>',
+  }).replace('</h2>', ' ' + cpBadge(c.status) + '</h2>');
+  const strip = uiMetricStrip([
+    {label: 'Prospects', value: String(st.prospects), sub: n(st.companies, 'company', 'companies')},
+    {label: 'Emails in sequence', value: String(seq.length), sub: seq.length ? campaignCadence(seq) : 'none written'},
+    {label: 'Waiting', value: String(st.waiting), sub: 'not contacted yet'},
+    {label: 'Contacted', value: String(st.contacted), sub: 'no reply yet'},
+    {label: 'Replied', value: String(st.replied), sub: st.interested ? st.interested + ' interested' : 'no replies yet'},
+  ]);
+  const steps = seq.length ? seq.map((step, s) => {
+    const fill = t => sample ? fillMergeVars(t, sample) : String(t || '');
+    const followUps = s > 0 ? rs.map((r, ri) => {
+      const a = campaignRecipientActions(c, ci, r, ri, s);
+      return a ? '<div class="rcpt"><span class="rcpt-who">' + escHtml(r.email) + '</span>' + a + '</div>' : '';
+    }).join('') : '';
+    return '<div class="cp-step"><span class="cp-step__n">' + escHtml(String(step.step || s + 1)) + '</span><div class="cp-step__main">'
+      + '<div class="cp-step__top"><span class="ui-strong">' + (s === 0 ? 'First email' : 'Follow-up ' + s) + '</span>'
+      + '<span class="cp-muted">' + (s === 0 ? 'Sends first' : (step.delay_days ? escHtml(String(step.delay_days)) + ' days after the last' : 'After the last')) + '</span></div>'
+      + '<div class="cp-step__subject">Subject: <b>' + escHtml(fill(step.subject)) + '</b></div>'
+      + '<div class="cp-step__body">' + escHtml(fill(step.body)) + '</div>'
+      + (followUps ? '<div class="step-actions">' + followUps + '</div>' : '')
+      + '</div></div>';
+  }).join('') : uiEmpty('No email steps in this campaign');
+  const seqCard = uiCard({title: 'Sequence', action: sample
+    ? 'Shown as ' + escHtml([sample.first_name, sample.last_name].filter(Boolean).join(' ') || sample.email) + ' gets it' : '',
+    body: '<div class="cp-steps">' + steps + '</div>'});
+  const people = rs.length ? uiTable({
+    columns: [
+      {key: 'name', header: 'Contact', render: r => '<span class="ui-cell-main">'
+        + uiDash([r.first_name, r.last_name].filter(Boolean).join(' ') || r.email) + '</span><span class="ui-cell-sub">'
+        + uiDash(r.company) + '</span>'},
+      {key: 'email', header: 'Email', render: r => escHtml(r.email) + ' ' + cpBadge(r.email_status || 'guess')},
+      {key: 'stage', header: 'Stage', render: r => cpBadge(r.status || 'new')},
+      {key: 'act', header: '', align: 'right', render: (r, ri) => '<span class="cp-acts">' + campaignRecipientActions(c, ci, r, ri, 0) + '</span>'},
+    ],
+    rows: rs, rowKey: r => r.id,
+  }) : uiEmpty('No contacts in this campaign', 'Sellbird adds the people it writes this sequence for.');
+  return head + strip + '<div class="ui-grid cp-grid">' + seqCard + '<div class="ui-stack">'
+    + uiCard({title: 'Progress', body: campaignProgress(c) || uiEmpty('Nobody to track yet')})
+    + uiCard({title: 'Contacts', body: people}) + '</div></div>';
+}
+
+function campaignListPage(data) {
+  const all = data.map((c, i) => Object.assign({_i: i}, c));
+  const rows = _cpFilter === 'all' ? all : all.filter(c => cpFilterKey(c.status) === _cpFilter);
+  const off = rows.length ? Math.min(_cpOffset, Math.floor((rows.length - 1) / CP_PAGE) * CP_PAGE) : 0;
+  return campaignCountTabs(data, _cpFilter)
+    + '<div>' + campaignsTable(rows.slice(off, off + CP_PAGE))
+    + uiPager({total: rows.length, offset: off, size: CP_PAGE, onPage: o => 'pageCampaigns(' + o + ')'}) + '</div>';
+}
+
+function campaignsHead() {
+  return uiPageHead({title: 'Campaigns',
+    sub: 'Each campaign is one audience and one sequence. Open a campaign to see its emails and the people it goes to.'});
+}
+
+function renderCampaigns() {
+  const el = document.getElementById('campaigns-list');
+  if (!el) return;
+  const data = _campaigns || [];
+  const ci = _cpOpen ? data.findIndex(c => c.id === _cpOpen) : -1;
+  if (ci >= 0) { el.innerHTML = campaignDetailPage(data[ci], ci); return; }
+  _cpOpen = null;
   if (!data.length) {
-    el.innerHTML = emptyState(icon('campaigns'), 'No campaigns yet',
-      'The Writer agent hasn\'t drafted any sequences. It kicks in automatically once Sellbird has scored prospects to write for.');
+    el.innerHTML = campaignsHead() + uiCard({body: uiEmpty('No campaigns yet',
+      'The Writer agent hasn\'t drafted any sequences. It kicks in automatically once Sellbird has scored prospects to write for.')});
     return;
   }
-  let html = '';
-  data.forEach((c, i) => {
-    let stepsHtml = '';
-    (c.sequence || []).forEach((step, s) => {
-      const sendBtns = (c.recipients || []).map((r, ri) => {
-        // Only offered when Sellbird can't send itself and this person can
-        // still be emailed (the server decides: can_send_by_hand).
-        if (r.sent_by_hand) {
-          const tick = '<label style="display:inline-flex;align-items:center;gap:4px;font-size:13px;cursor:pointer">' +
-            '<input type="checkbox" checked onchange="markSent(' + i + ',' + ri + ',this.checked)"> ' +
-            '&#10003; Sent by you</label>';
-          if (s === 0) return '<span class="rcpt-who">' + escHtml(r.email) + '</span>' + tick;
-          // Follow-ups are the user's too: Sellbird never emails someone they emailed.
-          return '<span class="rcpt-who">' + escHtml(r.email) + '</span>' +
-            '<button class="btn btn-secondary btn-sm" onclick="openInGmail(' + i + ',' + s + ',' + ri + ')">' +
-            'Open in Gmail</button>' +
-            '<span class="muted" style="font-size:12px">Sellbird won\'t send follow-ups to people you emailed yourself.</span>';
-        }
-        if (s !== 0) return '';
-        if (!r.can_send_by_hand) {
-          // Sellbird sends here; this only records an email the user already sent.
-          return r.can_mark_sent
-            ? '<label class="muted" style="display:inline-flex;align-items:center;gap:4px;font-size:12px;cursor:pointer">' +
-              '<input type="checkbox" onchange="markSent(' + i + ',' + ri + ',this.checked)"> ' +
-              'I already emailed ' + escHtml(r.email) + ' myself</label>'
-            : '';
-        }
-        const risky = r.email_status === 'risky'
-          ? ' <span class="mini t-waiting">Catch-all, may bounce</span>' : '';
-        return '<span class="rcpt-who">' + escHtml(r.email) + risky + '</span>' +
-          '<button class="btn btn-secondary btn-sm" onclick="openInGmail(' + i + ',' + s + ',' + ri + ')">' +
-          'Open in Gmail</button>' +
-          '<label><input type="checkbox" onchange="markSent(' + i + ',' + ri + ',this.checked)"> Mark as sent</label>'
-      }).filter(Boolean).map(x => '<div class="rcpt">' + x + '</div>').join('');
-      stepsHtml += '<div class="email-step"><span class="step-dot">' + escHtml(String(step.step || '?')) + '</span>' +
-        '<div><div class="step-num">' + (s === 0 ? 'First email' : 'Follow-up') +
-        (step.delay_days ? ' &middot; ' + escHtml(String(step.delay_days)) + ' days after the last' : '') + '</div>' +
-        '<div class="subject">' + escHtml(step.subject) + '</div>' +
-        '<div class="body">' + escHtml(step.body) + '</div>' +
-        (sendBtns ? '<div class="step-actions">' + sendBtns + '</div>' : '') +
-        '</div></div>';
-    });
-    const pc = (c.prospect_ids || []).length;
-    html += '<div class="campaign-card"><div class="campaign-top">' +
-      '<div class="campaign-title"><h3>' + escHtml(c.name || 'Untitled Campaign') + '</h3>' +
-        '<button class="btn btn-ghost btn-sm" onclick="fbCampaign(' + i + ')">Feedback</button></div>' +
-      '<div class="meta">' + badge(c.status) + '<span>' + pc + ' prospect' + (pc !== 1 ? 's' : '') + '</span>' +
-        '<span>' + (c.sequence || []).length + ' emails</span><span>Created ' + relTime(c.created_at) + '</span></div>' +
-      campaignProgress(c) + '</div>' +
-      '<div class="sequence">' +
-      (stepsHtml || '<p class="muted" style="font-size:13px;padding-top:16px">No email steps in this campaign.</p>') + '</div></div>';
-  });
-  el.innerHTML = html;
+  el.innerHTML = campaignsHead() + campaignListPage(data);
 }
+
+function openCampaign(i) {
+  const c = _campaigns[i];
+  if (!c) return;
+  _cpOpen = c.id;
+  renderCampaigns();
+  window.scrollTo({top: 0});
+}
+
+function closeCampaign() { _cpOpen = null; renderCampaigns(); }
+function setCampaignFilter(k) { _cpFilter = k; _cpOffset = 0; renderCampaigns(); }
+function pageCampaigns(o) { _cpOffset = o; renderCampaigns(); }
+
+// The sidebar's Campaigns button always lands on the list.
+document.addEventListener('click', e => {
+  const b = e.target.closest && e.target.closest('nav button');
+  if (b && /'campaigns'/.test(b.getAttribute('onclick') || '')) { _cpOpen = null; _cpOffset = 0; }
+}, true);
 
 // The whole exchange in order: Sellbird's cold emails (from the Outbox), the
 // replies, Sellbird's answers, and any answer still waiting for approval.
@@ -3322,129 +3469,271 @@ setInterval(() => {
 
 
 // ── Your company (sellbird.offer): what Sellbird writes from, and the offer ──
+// A list of sections; each opens its own edit page under a breadcrumb.
 
 let _company = null;
 let _offerIdeas = [];
-
-function ce(t) {
-  const d = document.createElement('div');
-  d.textContent = t == null ? '' : String(t);
-  return d.innerHTML;
-}
+let _coSection = null;
 
 function lines(list) { return (list || []).join('\n'); }
 function splitLines(text) { return String(text || '').split('\n').map(x => x.trim()).filter(Boolean); }
 
-async function loadCompany() {
-  const body = document.getElementById('company-body');
-  const data = await api('/api/company');
-  if (!data) { body.innerHTML = offlineState(); return; }
-  if (data.error) { body.innerHTML = `<p class="desc">${ce(data.error)}</p>`; return; }
-  _company = data;
-  const o = data.offer || {}, p = data.product || {}, icp = data.icp || {}, s = data.persona || {};
-  const objections = Object.entries(p.objection_responses || {});
-  body.innerHTML = `
-  <section class="card company-card" aria-labelledby="co-offer-h">
-    <div class="company-card-head">
-      <h3 id="co-offer-h">Your offer</h3>
-      <span class="hint">What every first email ends by offering</span>
-    </div>
-    ${o.proposed ? `<div class="offer-proposed">
-      <div><span class="tag accent">Your agent proposed</span></div>
-      <p class="offer-proposed-text">${ce(o.proposed.entry)}</p>
-      ${o.proposed.why ? `<p class="desc">${ce(o.proposed.why)}</p>` : ''}
-      <div class="offer-actions">
-        <button class="btn btn-primary btn-sm" onclick="useProposedOffer()">Use this offer</button>
-        <button class="btn btn-secondary btn-sm" onclick="dismissProposedOffer()">Dismiss</button>
-      </div>
-    </div>` : ''}
-    <p class="desc">Each first email names something Sellbird found about the prospect, says what it costs them, and offers this as the fix. Make it free, specific, and something you can deliver this week. ${o.entry ? '' : '<b>No offer yet</b>, so first emails end with a question instead. '}The easiest way to work it out is to ask your coding agent: <i>"Help me work out my Sellbird offer."</i></p>
-    <div class="form-group"><label class="form-label" for="offer-entry">Offer</label>
-      <textarea class="form-input" id="offer-entry" rows="2" maxlength="300" placeholder="e.g. a written plan for getting you onto page one of Google">${ce(o.entry || '')}</textarea></div>
-    <div class="offer-actions">
-      <button class="btn btn-primary btn-sm" onclick="saveOffer()">Save offer</button>
-      <button class="btn btn-secondary btn-sm" id="offer-preview-btn" onclick="previewOffer()">Preview an email</button>
-      <button class="btn btn-secondary btn-sm" id="offer-suggest-btn" onclick="suggestOffers()">Suggest ideas</button>
-    </div>
-    <div id="offer-preview" class="offer-preview" hidden></div>
-    <div id="offer-ideas" class="offer-ideas"></div>
-  </section>
+// A definition list: [{label, value}], value is text (escaped here); empty shows —.
+function uiDetails(items) {
+  return '<dl class="ui-details">' + items.map(it => '<div><dt>' + escHtml(it.label) + '</dt><dd>'
+    + uiDash(it.value) + '</dd></div>').join('') + '</dl>';
+}
 
-  <section class="card company-card" aria-labelledby="co-product-h">
-    <div class="company-card-head"><h3 id="co-product-h">What you sell</h3></div>
-    <div class="company-grid">
-      <div class="form-group"><label class="form-label" for="co-p-name">Product or service</label>
-        <input class="form-input" id="co-p-name" value="${ce(p.name)}"></div>
-      <div class="form-group"><label class="form-label" for="co-p-pricing">Pricing</label>
-        <input class="form-input" id="co-p-pricing" value="${ce(p.pricing)}"></div>
-    </div>
-    <div class="form-group"><label class="form-label" for="co-p-desc">What it is and who it's for</label>
-      <textarea class="form-input" id="co-p-desc" rows="3">${ce(p.description)}</textarea></div>
-    <div class="form-group"><label class="form-label" for="co-p-benefits">Key benefits <span class="hint">one per line</span></label>
-      <textarea class="form-input" id="co-p-benefits" rows="4">${ce(lines(p.key_benefits))}</textarea></div>
-    <div class="offer-actions"><button class="btn btn-primary btn-sm" onclick="saveCompanySection('product')">Save</button></div>
-  </section>
+// "## Heading" + its first line, from a training markdown file.
+function knowledgeFacts(md) {
+  const out = [];
+  let cur = null;
+  String(md || '').split('\n').forEach(raw => {
+    const line = raw.trim();
+    const h = /^##\s+(.+)$/.exec(line);
+    if (h) { cur = {k: h[1].trim(), v: ''}; out.push(cur); return; }
+    if (cur && !cur.v && line && !line.startsWith('#')) {
+      const v = line.replace(/^[-*]\s+/, '').replace(/\*\*/g, '');
+      cur.v = v.length > 180 ? v.slice(0, 177) + '…' : v;
+    }
+  });
+  return out;
+}
 
-  <section class="card company-card" aria-labelledby="co-icp-h">
-    <div class="company-card-head"><h3 id="co-icp-h">Who you sell to</h3></div>
-    <div class="company-grid">
-      <div class="form-group"><label class="form-label" for="co-i-industries">Industries <span class="hint">one per line</span></label>
-        <textarea class="form-input" id="co-i-industries" rows="4">${ce(lines(icp.industries))}</textarea></div>
-      <div class="form-group"><label class="form-label" for="co-i-titles">Job titles <span class="hint">one per line</span></label>
-        <textarea class="form-input" id="co-i-titles" rows="4">${ce(lines(icp.titles))}</textarea></div>
-      <div class="form-group"><label class="form-label" for="co-i-size">Company size</label>
-        <input class="form-input" id="co-i-size" value="${ce(icp.company_size)}"></div>
-      <div class="form-group"><label class="form-label" for="co-i-geo">Where <span class="hint">one per line</span></label>
-        <textarea class="form-input" id="co-i-geo" rows="2">${ce(lines(icp.geography))}</textarea></div>
-    </div>
-    <div class="offer-actions"><button class="btn btn-primary btn-sm" onclick="saveCompanySection('icp')">Save</button></div>
-  </section>
+// Competitors: the "## vs. X" cards, or every heading when there are none.
+function competitorItems(md) {
+  const facts = knowledgeFacts(md);
+  const vs = facts.filter(f => /^vs\.?\s/i.test(f.k));
+  return (vs.length ? vs.map(f => ({k: f.k.replace(/^vs\.?\s+/i, ''), v: f.v})) : facts)
+    .map(f => ({label: f.k, value: f.v}));
+}
 
-  <section class="card company-card" aria-labelledby="co-sender-h">
-    <div class="company-card-head"><h3 id="co-sender-h">Who it's from</h3>
-      <span class="hint">${ce(s.company)}${s.email ? ' · ' + ce(s.email) : ''}</span></div>
-    <div class="company-grid">
-      <div class="form-group"><label class="form-label" for="co-s-name">Sender name <span class="hint">signed under every email</span></label>
-        <input class="form-input" id="co-s-name" value="${ce(s.name)}"></div>
-      <div class="form-group"><label class="form-label" for="co-s-role">Role</label>
-        <input class="form-input" id="co-s-role" value="${ce(s.role)}"></div>
-    </div>
-    <div class="form-group"><label class="form-label" for="co-s-tone">Tone</label>
-      <input class="form-input" id="co-s-tone" value="${ce(s.tone)}"></div>
-    <div class="offer-actions"><button class="btn btn-primary btn-sm" onclick="saveCompanySection('persona')">Save</button></div>
-  </section>
+// The six sections, each with a status and a one-line current value.
+function companySections(c) {
+  c = c || {};
+  const o = c.offer || {}, p = c.product || {}, icp = c.icp || {}, s = c.persona || {};
+  const n = (k, one, many) => k + ' ' + (k === 1 ? one : many);
+  const objections = Object.keys(p.objection_responses || {}).length;
+  const benefits = (p.key_benefits || []).length;
+  const facts = knowledgeFacts(c.knowledge).length, rivals = c.competitors ? competitorItems(c.competitors).length : 0;
+  const join = parts => parts.filter(Boolean).join(' · ');
+  const audience = join([
+    (icp.industries || []).length ? n(icp.industries.length, 'industry', 'industries') : '',
+    (icp.titles || []).length ? n(icp.titles.length, 'title', 'titles') : '',
+    (icp.geography || []).length ? n(icp.geography.length, 'place', 'places') : '',
+    icp.company_size || '']);
+  const trained = !!(c.knowledge || c.competitors);
+  return [
+    {key: 'offer', title: 'Offer', desc: 'What every first email ends by offering',
+     status: o.entry ? 'Set' : (o.proposed ? 'Proposed' : 'Missing'), value: o.entry || ''},
+    {key: 'sell', title: 'What you sell', desc: 'Product, pricing, benefits',
+     status: (p.name || p.description) ? 'Set' : 'Missing',
+     value: join([p.name || p.description || '', benefits ? n(benefits, 'benefit', 'benefits') : ''])},
+    {key: 'audience', title: 'Who you sell to', desc: 'Industries, titles, places, size',
+     status: ((icp.industries || []).length || (icp.titles || []).length) ? 'Set' : 'Missing', value: audience},
+    {key: 'from', title: 'Who it\'s from', desc: 'Sender name, role and tone',
+     status: s.name ? 'Set' : 'Missing', value: join([s.name, s.role, s.tone])},
+    {key: 'objections', title: 'Objections and answers', desc: 'How replies handle pushback',
+     status: objections ? 'Set' : 'Missing', value: objections ? n(objections, 'objection', 'objections') + ' answered' : ''},
+    {key: 'learned', title: 'What Sellbird learned from your site', desc: 'Product knowledge and competitors, from training',
+     status: trained ? 'Trained' : 'Missing',
+     value: trained ? join([n(facts, 'topic', 'topics'), rivals ? n(rivals, 'competitor', 'competitors') : '']) : ''},
+  ];
+}
 
-  <section class="card company-card" aria-labelledby="co-obj-h">
-    <div class="company-card-head"><h3 id="co-obj-h">Objections and answers</h3>
-      <span class="hint">How replies handle pushback</span></div>
-    <div id="co-objections" class="company-objections">
-      ${(objections.length ? objections : [['', '']]).map(([k, v], i) => objectionRow(k, v, i)).join('')}
-    </div>
-    <div class="offer-actions">
-      <button class="btn btn-secondary btn-sm" onclick="addObjection()">Add an objection</button>
-      <button class="btn btn-primary btn-sm" onclick="saveCompanySection('product', true)">Save</button>
-    </div>
-  </section>
+function coStatusBadge(status) {
+  if (status === 'Set' || status === 'Trained') return uiBadge('success', status, 'check');
+  if (status === 'Proposed') return uiBadge('info', 'Proposed');
+  return uiBadge('warning', 'Missing');
+}
 
-  ${data.knowledge || data.competitors ? `<section class="card company-card" aria-labelledby="co-learned-h">
-    <div class="company-card-head"><h3 id="co-learned-h">What Sellbird learned from your site</h3>
-      <span class="hint">From training. Retrain with <code>sellbird train &lt;url&gt;</code></span></div>
-    ${data.knowledge ? `<details class="company-learned"><summary>Product knowledge</summary><pre>${ce(data.knowledge)}</pre></details>` : ''}
-    ${data.competitors ? `<details class="company-learned"><summary>Competitors</summary><pre>${ce(data.competitors)}</pre></details>` : ''}
-  </section>` : ''}`;
-  _offerIdeas = (o.entry_ideas || []).map(x => ({offer: x}));
-  renderOfferIdeas();
-  const badge = document.getElementById('nav-company');
-  if (badge) badge.textContent = o.proposed ? '1' : '';
+function companySummary(c) {
+  c = c || {};
+  const secs = companySections(c);
+  const done = secs.filter(x => x.status === 'Set' || x.status === 'Trained').length;
+  const p = c.product || {}, s = c.persona || {};
+  const objections = Object.keys(p.objection_responses || {}).length;
+  const trained = !!(c.knowledge || c.competitors);
+  return uiMetricStrip([
+    {label: 'Sections complete', value: done + ' of ' + secs.length, sub: done === secs.length ? 'ready to write' : (secs.length - done) + ' to fill in'},
+    {label: 'Objections answered', value: String(objections), sub: 'used in replies'},
+    {label: 'Trained from', value: trained ? 'Your website' : null,
+     sub: trained ? knowledgeFacts(c.knowledge).length + ' topics learned' : 'run sellbird train <url>'},
+    {label: 'Sender', value: s.name || null, sub: s.role || ''},
+  ]);
+}
+
+function companySectionsTable(c) {
+  return uiTable({
+    columns: [
+      {key: 'title', header: 'Section', render: r => '<span class="ui-cell-main">' + escHtml(r.title) + '</span>'
+        + '<span class="ui-cell-sub">' + escHtml(r.desc) + '</span>'},
+      {key: 'status', header: '', render: r => coStatusBadge(r.status)},
+      {key: 'value', header: 'Current value', render: r => '<span class="co-value">' + uiDash(r.value) + '</span>'},
+    ],
+    rows: companySections(c), rowKey: r => r.key,
+    onRow: r => 'openCompanySection(' + jsq(r.key) + ')',
+  });
 }
 
 function objectionRow(k, v, i) {
   return `<div class="company-objection">
     <div class="form-group"><label class="form-label" for="co-ok-${i}">When they say</label>
-      <input class="form-input co-ok" id="co-ok-${i}" value="${ce(k)}"></div>
+      <input class="form-input co-ok" id="co-ok-${i}" value="${escHtml(k)}"></div>
     <div class="form-group"><label class="form-label" for="co-ov-${i}">Answer with</label>
-      <textarea class="form-input co-ov" id="co-ov-${i}" rows="2">${ce(v)}</textarea></div>
+      <textarea class="form-input co-ov" id="co-ov-${i}" rows="2">${escHtml(v)}</textarea></div>
   </div>`;
+}
+
+function coField(id, label, inputHtml, help = '') {
+  return '<div class="form-group"><label class="form-label" for="' + id + '">' + escHtml(label) + '</label>'
+    + inputHtml + (help ? '<div class="co-help">' + escHtml(help) + '</div>' : '') + '</div>';
+}
+function coInput(id, value, extra = '') {
+  return '<input class="form-input" id="' + id + '" value="' + escHtml(value) + '"' + extra + '>';
+}
+function coArea(id, value, rows) {
+  return '<textarea class="form-input" id="' + id + '" rows="' + rows + '">' + escHtml(value) + '</textarea>';
+}
+
+// One section's edit page: breadcrumb, title, Cancel/Save, then its form.
+function companySectionPage(key, c) {
+  c = c || {};
+  const sec = companySections(c).find(x => x.key === key) || companySections(c)[0];
+  const o = c.offer || {}, p = c.product || {}, icp = c.icp || {}, s = c.persona || {};
+  const save = {offer: 'saveOffer()', sell: 'saveCompanySection(\'product\')', audience: 'saveCompanySection(\'icp\')',
+                from: 'saveCompanySection(\'persona\')', objections: 'saveCompanySection(\'product\', true)'}[sec.key];
+  const actions = '<button class="btn btn-secondary" onclick="closeCompanySection()">' + (save ? 'Cancel' : 'Back') + '</button>'
+    + (save ? '<button class="btn btn-primary" onclick="' + save + '">Save</button>' : '');
+  const head = uiPageHead({title: sec.title, sub: sec.desc + '.', actions,
+    crumbs: [{label: 'Your company', js: 'closeCompanySection()'}]})
+    .replace('</h2>', ' ' + coStatusBadge(sec.status) + '</h2>');
+  let body = '';
+  if (sec.key === 'offer') {
+    const proposed = o.proposed ? '<div class="offer-proposed">'
+      + '<div>' + uiBadge('info', 'Your agent proposed') + '</div>'
+      + '<p class="offer-proposed-text">' + escHtml(o.proposed.entry) + '</p>'
+      + (o.proposed.why ? '<p class="co-help">' + escHtml(o.proposed.why) + '</p>' : '')
+      + '<div class="offer-actions"><button class="btn btn-primary btn-sm" onclick="useProposedOffer()">Use this offer</button>'
+      + '<button class="btn btn-secondary btn-sm" onclick="dismissProposedOffer()">Dismiss</button></div></div>' : '';
+    body = '<div class="ui-grid co-grid">'
+      + uiCard({title: 'Your offer', body: proposed
+        + coField('offer-entry', 'Offer', '<textarea class="form-input" id="offer-entry" rows="3" maxlength="300" placeholder="e.g. a written plan for getting you onto page one of Google">'
+          + escHtml(o.entry || '') + '</textarea>',
+          'Each first email names something Sellbird found about the prospect, says what it costs them, and offers this as the fix. '
+          + 'Make it free, specific, and something you can deliver this week.'
+          + (o.entry ? '' : ' No offer yet, so first emails end with a question instead.')
+          + ' The easiest way to work it out is to ask your coding agent: "Help me work out my Sellbird offer."')
+        + '<div class="offer-actions">'
+        + '<button class="btn btn-secondary btn-sm" id="offer-preview-btn" onclick="previewOffer()">Preview an email</button>'
+        + '<button class="btn btn-secondary btn-sm" id="offer-suggest-btn" onclick="suggestOffers()">Suggest ideas</button></div>'
+        + '<div id="offer-preview" class="offer-preview" hidden></div>'})
+      + uiCard({title: 'Ideas to start from', cls: 'ui-card--subdued', body: '<div id="offer-ideas" class="offer-ideas"></div>'})
+      + '</div>';
+  } else if (sec.key === 'sell') {
+    body = uiCard({title: 'What you sell', body: '<div class="company-grid">'
+      + coField('co-p-name', 'Product or service', coInput('co-p-name', p.name))
+      + coField('co-p-pricing', 'Pricing', coInput('co-p-pricing', p.pricing)) + '</div>'
+      + coField('co-p-desc', 'What it is and who it\'s for', coArea('co-p-desc', p.description, 3))
+      + coField('co-p-benefits', 'Key benefits', coArea('co-p-benefits', lines(p.key_benefits), 4), 'One per line')});
+  } else if (sec.key === 'audience') {
+    body = uiCard({title: 'Who you sell to', body: '<div class="company-grid">'
+      + coField('co-i-industries', 'Industries', coArea('co-i-industries', lines(icp.industries), 4), 'One per line')
+      + coField('co-i-titles', 'Job titles', coArea('co-i-titles', lines(icp.titles), 4), 'One per line')
+      + coField('co-i-geo', 'Where', coArea('co-i-geo', lines(icp.geography), 4), 'One per line')
+      + coField('co-i-size', 'Company size', coInput('co-i-size', icp.company_size)) + '</div>'});
+  } else if (sec.key === 'from') {
+    body = uiCard({title: 'Who it\'s from', body: '<div class="company-grid">'
+      + coField('co-s-name', 'Sender name', coInput('co-s-name', s.name), 'Signed under every email')
+      + coField('co-s-role', 'Role', coInput('co-s-role', s.role))
+      + coField('co-s-company', 'Company', coInput('co-s-company', s.company, ' disabled'), 'Set in your config file')
+      + coField('co-s-email', 'Reply-to', coInput('co-s-email', s.email, ' disabled'), 'Set in your config file')
+      + coField('co-s-tone', 'Tone', coInput('co-s-tone', s.tone)) + '</div>'});
+  } else if (sec.key === 'objections') {
+    const objections = Object.entries(p.objection_responses || {});
+    body = uiCard({title: 'Objections and answers',
+      action: '<button class="btn btn-secondary btn-sm" onclick="addObjection()">' + icon('plus') + 'Add an objection</button>',
+      body: '<div id="co-objections" class="company-objections">'
+        + (objections.length ? objections : [['', '']]).map(([k, v], i) => objectionRow(k, v, i)).join('') + '</div>'});
+  } else {
+    const facts = knowledgeFacts(c.knowledge), rivals = c.competitors ? competitorItems(c.competitors) : [];
+    const full = (label, text) => text ? '<details class="company-learned"><summary>' + escHtml(label)
+      + '</summary><pre>' + escHtml(text) + '</pre></details>' : '';
+    const retrain = '<span>Retrain with <code>sellbird train &lt;url&gt;</code></span>';
+    if (!c.knowledge && !c.competitors) {
+      body = uiCard({body: uiEmpty('Nothing learned yet',
+        'Train Sellbird on your website with sellbird train <url> and what it learns about your product and competitors shows here.')});
+    } else {
+      body = '<div class="ui-grid co-grid">'
+        + uiCard({title: 'Product knowledge', action: retrain, body: uiTable({
+            columns: [{key: 'k', header: 'Fact', render: r => '<span class="ui-strong">' + escHtml(r.k) + '</span>'},
+                      {key: 'v', header: 'Detail', render: r => '<span class="co-value">' + uiDash(r.v) + '</span>'}],
+            rows: facts, empty: 'No product knowledge yet'}) + full('Read the full text', c.knowledge)})
+        + '<div class="ui-stack">'
+        + uiCard({title: 'Competitors', body: rivals.length ? uiDetails(rivals) + full('Read the battle cards', c.competitors)
+            : uiEmpty('No competitors yet')})
+        + uiCard({title: 'Source', body: uiDetails([
+            {label: 'Product knowledge', value: c.knowledge ? 'skills/product_knowledge.md' : ''},
+            {label: 'Competitors', value: c.competitors ? 'skills/competitive_intel.md' : ''},
+            {label: 'Topics', value: String(facts.length)}])})
+        + '</div></div>';
+    }
+  }
+  return head + body;
+}
+
+function companyListPage(c) {
+  const o = (c && c.offer) || {};
+  return uiPageHead({title: 'Your company',
+      sub: 'Everything Sellbird writes from: what you sell, who you sell to, the offer every first email ends with, '
+        + 'and who it\'s from. Open a section to edit it, or talk it through with your coding agent.',
+      actions: '<button class="btn btn-secondary" onclick="companyPreview()">Preview an email</button>'})
+    + (o.proposed ? uiBanner({tone: 'warning', iconName: 'flag', title: 'Your agent proposed an offer',
+        body: o.proposed.entry,
+        actions: '<button class="btn btn-secondary btn-sm" onclick="openCompanySection(\'offer\')">Review it</button>'}) : '')
+    + companySummary(c) + companySectionsTable(c);
+}
+
+function renderCompany() {
+  const body = document.getElementById('company-body');
+  if (!body || !_company) return;
+  body.innerHTML = _coSection ? companySectionPage(_coSection, _company) : companyListPage(_company);
+  if (_coSection === 'offer') renderOfferIdeas();
+}
+
+// keepSection: stay on the open section (after saving the offer); otherwise the list.
+async function loadCompany(keepSection) {
+  if (!keepSection) _coSection = null;
+  const body = document.getElementById('company-body');
+  const data = await api('/api/company');
+  if (!data) { body.innerHTML = offlineState(); return; }
+  if (data.error) {
+    body.innerHTML = uiBanner({tone: 'danger', iconName: 'alert', title: 'Couldn\'t read your company', body: data.error});
+    return;
+  }
+  _company = data;
+  _offerIdeas = ((data.offer || {}).entry_ideas || []).map(x => ({offer: x}));
+  renderCompany();
+  const badge = document.getElementById('nav-company');
+  if (badge) badge.textContent = (data.offer || {}).proposed ? '1' : '';
+}
+
+function openCompanySection(key) {
+  _coSection = key;
+  renderCompany();
+  window.scrollTo({top: 0});
+}
+
+// Back to the list, re-read so the summary shows what was just saved.
+function closeCompanySection() {
+  _coSection = null;
+  loadCompany();
+}
+
+// The header's "Preview an email": the preview lives on the offer page.
+function companyPreview() {
+  openCompanySection('offer');
+  previewOffer();
 }
 
 function addObjection() {
@@ -3480,12 +3769,15 @@ async function saveCompanySection(section, objectionsOnly) {
 function renderOfferIdeas() {
   const box = document.getElementById('offer-ideas');
   if (!box) return;
-  if (!_offerIdeas.length) { box.innerHTML = ''; return; }
-  box.innerHTML = '<div class="form-label">Ideas to start from (click one to put it in the box, then make it yours)</div>' +
+  if (!_offerIdeas.length) {
+    box.innerHTML = '<p class="co-help">No ideas yet. Press Suggest ideas and Sellbird proposes a few offers that fit what you sell.</p>';
+    return;
+  }
+  box.innerHTML = '<p class="co-help">Click one to put it in the box, then make it yours.</p>' +
     _offerIdeas.map((idea, i) => `<button type="button" class="offer-idea" onclick="useOfferIdea(${i})">
-      <span class="offer-idea-text">${ce(idea.offer)}</span>
-      ${idea.finding ? `<span class="offer-idea-meta">Pairs with: ${ce(idea.finding)}</span>` : ''}
-      ${idea.why ? `<span class="offer-idea-meta">${ce(idea.why)}</span>` : ''}
+      <span class="offer-idea-text">${escHtml(idea.offer)}</span>
+      ${idea.finding ? `<span class="offer-idea-meta">Pairs with: ${escHtml(idea.finding)}</span>` : ''}
+      ${idea.why ? `<span class="offer-idea-meta">${escHtml(idea.why)}</span>` : ''}
     </button>`).join('');
 }
 
@@ -3499,7 +3791,7 @@ async function suggestOffers() {
   const btn = document.getElementById('offer-suggest-btn');
   btn.disabled = true; btn.textContent = 'Thinking...';
   document.getElementById('offer-ideas').innerHTML =
-    '<p class="desc">Sellbird is reading your product and coming up with offers that fit it...</p>';
+    '<p class="co-help">Sellbird is reading your product and coming up with offers that fit it...</p>';
   const r = await api('/api/offer/suggest', {method: 'POST'});
   btn.disabled = false; btn.textContent = 'Suggest ideas';
   if (!r || r.error || !r.ideas) { renderOfferIdeas(); showToast((r && r.error) || 'Sellbird couldn\'t come up with offers just now. Try again.', 'error'); return; }
@@ -3514,14 +3806,14 @@ async function previewOffer() {
   const box = document.getElementById('offer-preview');
   btn.disabled = true; btn.textContent = 'Writing...';
   box.hidden = false;
-  box.innerHTML = '<p class="desc">Writing a sample first email for one of your prospects. Nothing is saved or sent.</p>';
+  box.innerHTML = '<p class="co-help">Writing a sample first email for one of your prospects. Nothing is saved or sent.</p>';
   box.scrollIntoView({block: 'nearest', behavior: 'smooth'});
   const r = await api('/api/offer/preview', {method: 'POST', headers: {'Content-Type': 'application/json'},
                                             body: JSON.stringify({entry})});
   btn.disabled = false; btn.textContent = 'Preview an email';
-  if (!r || !r.ok) { box.innerHTML = `<p class="desc">${ce((r && r.message) || 'The preview failed. Try again.')}</p>`; return; }
-  box.innerHTML = `<div class="form-label">Sample for ${ce(r.to)} (not saved, not sent)</div>
-    <div class="offer-mail"><div class="offer-mail-subject">${ce(r.subject)}</div><pre>${ce(r.body)}</pre></div>`;
+  if (!r || !r.ok) { box.innerHTML = `<p class="co-help">${escHtml((r && r.message) || 'The preview failed. Try again.')}</p>`; return; }
+  box.innerHTML = `<div class="form-label">Sample for ${escHtml(r.to)} (not saved, not sent)</div>
+    <div class="offer-mail"><div class="offer-mail-subject">${escHtml(r.subject)}</div><pre>${escHtml(r.body)}</pre></div>`;
   box.scrollIntoView({block: 'nearest', behavior: 'smooth'});
 }
 
@@ -3529,7 +3821,7 @@ async function saveOffer(entryOverride) {
   const entry = entryOverride != null ? entryOverride : document.getElementById('offer-entry').value.trim();
   const r = await api('/api/offer', {method: 'POST', headers: {'Content-Type': 'application/json'},
                                      body: JSON.stringify({entry})});
-  if (r && r.success) { showToast(r.message, 'success'); loadCompany(); }
+  if (r && r.success) { showToast(r.message, 'success'); loadCompany(_coSection === 'offer'); }
   else showToast((r && r.message) || 'Couldn\'t save the offer.', 'error');
 }
 
@@ -3539,7 +3831,7 @@ async function useProposedOffer() {
 
 async function dismissProposedOffer() {
   await api('/api/offer/propose', {method: 'DELETE'});
-  loadCompany();
+  loadCompany(_coSection === 'offer');
 }
 
 (function wireInboxDialog() {
