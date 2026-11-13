@@ -184,3 +184,36 @@ def test_main_mailbox_page_keeps_connect_and_settings_note():
     page = inboxes(f"inboxDetailPage({json.dumps(ib)}, {{can_connect: {{gmail: true}}}})")
     assert "connectMainMailbox(" in page and 'id="main-status"' in page and "Main mailbox" in page
     assert "removeInbox(" not in page and "per_inbox_daily_cap" in page
+
+
+def test_double_tap_approves_only_the_email_on_screen():
+    # The POST is slow: a second A (or a held-down key) must not act on the
+    # next draft, which was never shown.
+    prelude = (
+        "let currentTab = 'outbox';\n"
+        "let _desk = {items: [{id: 'o1'}, {id: 'o2'}], i: 0, open: 'o1', editing: null};\n"
+        "const posts = [];\n"
+        "const api = (path) => { posts.push(path); return new Promise(() => {}); };\n"
+        "const deskBusy = () => false; const loadOutbox = async () => {}; const showToast = () => {};\n"
+        "const failMsg = (d, f) => f; const deskGo = () => {}; const deskEdit = () => {};\n"
+    )
+    call = ("(outboxKey({key: 'a', target: {tagName: 'BODY'}}), outboxKey({key: 'a', target: {tagName: 'BODY'}}),"
+            " outboxKey({key: 'a', repeat: true, target: {tagName: 'BODY'}}), JSON.stringify(posts))")
+    out = json.loads(run_js(("outboxKey", "outboxAct"), call, prelude))
+    assert out == ["/api/outbox/o1/approve"]
+
+
+def test_inbox_page_not_rebuilt_while_in_use():
+    def busy(state):
+        prelude = ("let _mainPoll = " + json.dumps(state.get("poll")) + ";\n"
+                   "const page = {contains: el => el === focused};\n"
+                   "const focused = " + ("{tagName: 'INPUT'}" if state.get("focus") else "null") + ";\n"
+                   "const fields = " + json.dumps(state.get("fields", [])) + ";\n"
+                   "const document = {activeElement: focused, getElementById: id => id === 'inbox-page' ? page"
+                   " : (fields.find(f => f.id === id) || null)};\n")
+        return run_js(("inboxPageBusy",), "String(inboxPageBusy())", prelude)
+    assert busy({}) == "false"
+    assert busy({"focus": True}) == "true"
+    assert busy({"poll": 1}) == "true"
+    assert busy({"fields": [{"id": "ib-cap", "value": "40", "defaultValue": "30"}]}) == "true"
+    assert busy({"fields": [{"id": "ib-cap", "value": "30", "defaultValue": "30"}]}) == "false"

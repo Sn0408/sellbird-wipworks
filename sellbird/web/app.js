@@ -539,6 +539,10 @@ function showTab(id, btn) {
   currentTab = id;
   if (id === 'companies') companyDrill = false;
   if (id === 'prospects') _contactOpen = null;
+  if (id === 'conversations') _convoOpen = null;
+  if (id === 'inboxes' && !_mainPoll) _inboxOpen = null;
+  if (id === 'discover') _discoverView = null;
+  if (id === 'outbox' && !_desk.editing) _desk.open = null;
   document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
   document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
   document.getElementById(id).classList.add('active');
@@ -2560,6 +2564,9 @@ function deskGo(n) {
 // editing a draft (or Settings) never approves or rejects it.
 function outboxKey(e) {
   if (currentTab !== 'outbox' || e.metaKey || e.ctrlKey || e.altKey) return;
+  // A held-down key, or a second press while the first is still sending,
+  // would act on the next email before it is on screen.
+  if (e.repeat || _desk.acting) return;
   const stop = () => { if (e.preventDefault) e.preventDefault(); };
   const t = e.target || {};
   const typing = /^(input|textarea|select)$/i.test(t.tagName || '') || !!t.isContentEditable;
@@ -2586,7 +2593,8 @@ function outboxKey(e) {
 document.addEventListener('keydown', outboxKey);
 
 async function outboxAct(id, action) {
-  if (deskBusy()) return;
+  if (_desk.acting || deskBusy()) return;
+  _desk.acting = true;
   // Acting on the open email moves the page on to the next one waiting.
   if (String(_desk.open) === String(id)) {
     const at = _desk.items.findIndex(p => String(p.id) === String(id));
@@ -2596,7 +2604,7 @@ async function outboxAct(id, action) {
   const data = await api('/api/outbox/' + encodeURIComponent(id) + '/' + action, {method: 'POST'});
   if (data && data.success) showToast(action === 'approve' ? 'Approved — will send on schedule.' : 'Rejected.', 'success');
   else showToast(failMsg(data, 'Action failed.'), 'error');
-  loadOutbox();
+  try { await loadOutbox(); } finally { _desk.acting = false; }
 }
 
 async function outboxApproveAll() {
@@ -3995,6 +4003,20 @@ const INBOX_KINDS = {
 };
 let _inboxes = null;
 let _inboxPoll = null;
+let _mainPoll = null;    // the main-mailbox sign-in; the Add-inbox dialog has its own
+
+// The inbox page is rebuilt by the 15-second refresh only when nobody is using
+// it: no field focused or edited, and no sign-in waiting to finish.
+function inboxPageBusy() {
+  if (_mainPoll) return true;
+  const page = document.getElementById('inbox-page');
+  const active = document.activeElement;
+  if (page && active && page.contains(active) && /^(input|textarea|select)$/i.test(active.tagName || '')) return true;
+  return ['ib-cap', 'ib-name', 'ib-confirm'].some(id => {
+    const el = document.getElementById(id);
+    return !!el && el.value !== el.defaultValue;
+  });
+}
 let _inboxOpen = null;   // id of the inbox whose page is showing
 
 function inboxBadge(ib) {
@@ -4091,7 +4113,8 @@ function inboxWhyCard(data) {
     '</div>'});
 }
 
-async function loadInboxes() {
+// `force`: after your own action, rebuild even if the page looks in use.
+async function loadInboxes(force = false) {
   const el = document.getElementById('inboxes-list');
   const actions = document.getElementById('inboxes-actions');
   const data = await api('/api/inboxes');
@@ -4119,7 +4142,7 @@ async function loadInboxes() {
 
   const list = data.inboxes || [];
   const at = _inboxOpen === null ? -1 : list.findIndex(i => i.id === _inboxOpen);
-  if (at >= 0) renderInboxPage(at);
+  if (at >= 0) { if (force || !inboxPageBusy()) renderInboxPage(at); }
   else { _inboxOpen = null; inboxShowList(true); }
 }
 
@@ -4279,7 +4302,7 @@ async function inboxPost(path, body, done, keepOpen) {
   if (r && r.success) {
     if (done) showToast(done, 'success');
     if (!keepOpen) closeInboxDialog();
-    loadInboxes();
+    loadInboxes(true);
   } else showToast((r && r.message) || 'That didn\'t work.', 'error');
   return r;
 }
@@ -4435,14 +4458,14 @@ async function connectMainMailbox(kind) {
   }
   say('wait', 'A ' + (kind === 'gmail' ? 'Google' : 'Microsoft') + ' sign-in opened in your browser. ' +
     'Sign in as your sending address and allow access. This page updates when you\'re done.');
-  if (_inboxPoll) clearInterval(_inboxPoll);
-  _inboxPoll = setInterval(async () => {
+  if (_mainPoll) clearInterval(_mainPoll);
+  _mainPoll = setInterval(async () => {
     const s = await api('/api/inboxes/connect/status');
     if (!s || s.state === 'waiting') return;
-    clearInterval(_inboxPoll); _inboxPoll = null;
+    clearInterval(_mainPoll); _mainPoll = null;
     if (s.state === 'connected') {
       showToast('Main mailbox connected', 'success');
-      closeInboxDialog(); loadInboxes();
+      closeInboxDialog(); loadInboxes(true);
     } else {
       if (go) go.disabled = false;
       say('bad', escHtml(s.message || 'The sign-in didn\'t finish.'));
@@ -4471,7 +4494,7 @@ async function submitAddInbox() {
   if (_addKind === 'smtp') {
     showToast('Connected ' + r.address, 'success');
     if (!r.test_ok) showToast('It\'s connected, but the check failed: ' + (r.test_detail || ''), 'error');
-    closeInboxDialog(); loadInboxes();
+    closeInboxDialog(); loadInboxes(true);
     return;
   }
   addStatus('wait', 'A ' + (_addKind === 'gmail' ? 'Google' : 'Microsoft') + ' sign-in opened in your browser. ' +
@@ -4483,7 +4506,7 @@ async function submitAddInbox() {
     if (s.state === 'connected') {
       showToast('Connected ' + s.address, 'success');
       if (s.message) showToast('It\'s connected, but the check failed: ' + s.message, 'error');
-      closeInboxDialog(); loadInboxes();
+      closeInboxDialog(); loadInboxes(true);
     } else {
       go.disabled = false;
       addStatus('bad', escHtml(s.message || 'The sign-in didn\'t finish.'));
