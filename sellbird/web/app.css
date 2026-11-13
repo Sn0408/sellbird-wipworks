@@ -264,7 +264,8 @@ nav button .label { flex: 1; min-width: 0; overflow: hidden; text-overflow: elli
   nav button:hover { background: var(--surface-2); color: var(--text); }
   nav button:hover .icon { color: var(--text-2); }
 }
-nav button.active { color: var(--link); font-weight: 600; }
+nav button.active { background: var(--surface-2); color: var(--link); font-weight: 600; }
+nav button.active .label { text-decoration: underline; text-underline-offset: 3px; }
 nav button.active .icon { color: var(--link); }
 .nav-count {
   display: none; min-width: 20px; height: 18px; padding: 0 6px;
