@@ -538,6 +538,7 @@ function toggleVisibility(inputId) {
 function showTab(id, btn) {
   currentTab = id;
   if (id === 'companies') companyDrill = false;
+  if (id === 'prospects') _contactOpen = null;
   document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
   document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
   document.getElementById(id).classList.add('active');
@@ -2212,140 +2213,447 @@ async function sendingToggle(action) {
   loadOutbox();
 }
 
+// ── Companies and Contacts: shared list parts ──
+// Pure render helpers both list tabs use: a fit/score bar, boxed count tabs,
+// filter chips that open a menu of values, the pager and a details list.
+
+function listBar(value, tone) {
+  if (value === null || value === undefined || value === '' || isNaN(Number(value))) return uiDash('');
+  const v = Math.max(0, Math.min(100, Math.round(Number(value))));
+  const t = tone || (v >= 50 ? 'good' : v >= 30 ? 'brand' : 'muted');
+  return '<span class="lists-bar" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + v + '">'
+    + '<span class="lists-bar__track"><i class="is-' + t + '" style="width:' + v + '%"></i></span>'
+    + '<span class="lists-bar__n">' + v + '</span></span>';
+}
+
+// Boxed tabs with a count under each label (the design's CountTabs).
+function listCountTabs(items, activeKey, onSelect) {
+  return '<div class="lists-counts" role="tablist">' + items.map(t =>
+    '<button type="button" class="lists-count" role="tab" aria-selected="' + (t.key === activeKey) + '" onclick="'
+    + onSelect(t.key) + '">' + escHtml(t.label)
+    + '<span class="lists-count__n">' + escHtml(String(Number(t.count) || 0)) + '</span></button>').join('') + '</div>';
+}
+
+// A filter chip that opens a short menu of values. Applied, it shows the value.
+function listFilterChip({label, value = '', options = [], onPick, clearJs = ''}) {
+  const applied = value !== '' && value !== null && value !== undefined;
+  const close = 'this.closest(\'details\').open=false;';
+  return '<details class="ui-menu lists-filter"><summary class="lists-chip' + (applied ? ' is-applied' : '') + '">'
+    + icon(applied ? 'close' : 'plus') + escHtml(label)
+    + (applied ? '<span class="lists-chip__sep"></span><span class="lists-chip__value">' + escHtml(value) + '</span>'
+      + icon('chevron', 'lists-chip__chev') : '')
+    + '</summary><div class="ui-menu__list lists-menu">'
+    + (applied && clearJs ? '<button type="button" onclick="' + close + clearJs + '">Any ' + escHtml(String(label).toLowerCase()) + '</button>' : '')
+    + options.map(o => '<button type="button"' + (o.on ? ' aria-pressed="true"' : '') + ' onclick="' + close + onPick(o.key) + '">'
+      + (o.on ? icon('check') : '') + '<span>' + escHtml(o.label) + '</span>'
+      + (o.count !== undefined ? '<span class="lists-menu__n">' + escHtml(String(o.count)) + '</span>' : '') + '</button>').join('')
+    + (options.length ? '' : '<div class="lists-menu__empty">Nothing to filter by yet</div>')
+    + '</div></details>';
+}
+
+// "1–50 of 302 companies · Page 1 of 7", Previous, Next. A null js disables the button.
+function listPager(summary, prevJs, nextJs) {
+  return '<div class="ui-pager"><span>' + escHtml(summary) + '</span><div class="ui-pager__btns">'
+    + '<button type="button" class="btn btn-sm"' + (prevJs ? ' onclick="' + prevJs + '"' : ' disabled') + '>Previous</button>'
+    + '<button type="button" class="btn btn-sm"' + (nextJs ? ' onclick="' + nextJs + '"' : ' disabled') + '>Next</button>'
+    + '</div></div>';
+}
+
+// A label/value list. Values are HTML the caller escaped; empty shows a dash.
+function listDetails(items) {
+  return '<dl class="ui-details">' + items.map(([k, v]) =>
+    '<div><dt>' + escHtml(k) + '</dt><dd>' + (v === '' || v === null || v === undefined ? uiDash('') : v) + '</dd></div>').join('') + '</dl>';
+}
+
+function listLink(url, text) {
+  const href = safeHref(url);
+  return href
+    ? '<a href="' + href + '" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">' + escHtml(text || url) + '</a>'
+    : escHtml(text || '');
+}
+
+// Any stored status as a badge: the word from STATUS, the design's tone.
+function listStatusBadge(status) {
+  if (!status) return uiDash('');
+  const m = statusMeta(status);
+  const tone = {good: 'success', bad: 'danger', waiting: 'warning', active: 'info'}[m.tone] || 'neutral';
+  return uiBadge(tone, m.label);
+}
+
+function setColumnsFrom(el, key, after) {
+  const keys = Array.from(el.closest('details').querySelectorAll('input:checked')).map(i => i.value);
+  saveColumns(key, keys);
+  after();
+}
+
+// ── Companies ──
+
 const COMPANIES_PER_PAGE = 50;
 let _companiesPage = 0;
+let _companyView = {q: '', chips: {}};
+const COMPANY_COLUMNS = [
+  {key: 'name', header: 'Company'},
+  {key: 'fit', header: 'Fit'},
+  {key: 'status', header: 'Status'},
+  {key: 'industry', header: 'Industry'},
+  {key: 'location', header: 'Location'},
+  {key: 'contacts', header: 'Contacts', align: 'right'},
+  {key: 'added', header: 'Added', align: 'right'},
+];
+const COMPANY_DEFAULT_COLUMNS = ['name', 'fit', 'status', 'industry', 'location'];
+// Register statuses, in pipeline order, for the count tabs.
+const COMPANY_STATUS_ORDER = ['Ready', 'Draft waiting', 'Queued', 'Approved', 'Emailed', 'Replied',
+  'Not contacted', 'Not processed yet', 'Opted out', 'Excluded'];
+
+function companyStatusLabel(s) {
+  return s === 'Not processed yet' ? 'Not processed' : String(s || '');
+}
+
+function companyStatusBadge(s, why) {
+  if (!s) return uiDash('');
+  const tone = ['Approved', 'Emailed', 'Replied', 'Ready'].includes(s) ? 'success'
+    : s === 'Not contacted' ? 'info'
+    : ['Draft waiting', 'Queued'].includes(s) ? 'warning'
+    : ['Opted out', 'Excluded'].includes(s) ? 'danger' : 'neutral';
+  const badgeHtml = uiBadge(tone, companyStatusLabel(s), ['Approved', 'Emailed', 'Replied'].includes(s) ? 'check' : '');
+  return why ? '<span title="' + escHtml(why) + '">' + badgeHtml + '</span>' : badgeHtml;
+}
+
+// Search (name, domain) and the chips, all on the companies already loaded.
+function companiesFilter(rows, {q = '', chips = {}} = {}) {
+  const needle = String(q || '').trim().toLowerCase();
+  return (rows || []).filter(c => {
+    if (needle && ![c.name, c.domain, c.website].join(' ').toLowerCase().includes(needle)) return false;
+    if (chips.status && c.register_status !== chips.status) return false;
+    if (chips.industry && (c.industry || '') !== chips.industry) return false;
+    if (chips.location && (c.location || '') !== chips.location) return false;
+    if (chips.fit) {
+      const f = Number(c.fit);
+      if (typeof c.fit !== 'number') return false;
+      if (chips.fit === '50' && f < 50) return false;
+      if (chips.fit === '30' && (f < 30 || f >= 50)) return false;
+      if (chips.fit === '0' && f >= 30) return false;
+    }
+    const site = !!(c.website || c.domain);
+    if (chips.website === 'yes' && !site) return false;
+    if (chips.website === 'no' && site) return false;
+    if (chips.contacts && !(Number(c.contact_count) > 0)) return false;
+    if (chips.contacted && !['Emailed', 'Replied'].includes(c.register_status)) return false;
+    return true;
+  });
+}
+
+function companiesSummary(rows) {
+  rows = rows || [];
+  const n = (pred) => rows.filter(pred).length;
+  const fits = rows.map(c => c.fit).filter(f => typeof f === 'number');
+  const sources = new Set(rows.map(c => String(c.source || '').replace(/^discover:/, '')).filter(Boolean));
+  const notContacted = n(c => c.register_status === 'Not contacted');
+  return uiMetricStrip([
+    {label: 'Companies', value: rows.length,
+     sub: sources.size ? 'from ' + sources.size + ' source' + (sources.size === 1 ? '' : 's') : ''},
+    {label: 'Approved for outreach', value: n(c => c.register_status === 'Approved'),
+     sub: notContacted + ' not contacted'},
+    {label: 'Average fit', value: fits.length ? Math.round(fits.reduce((a, b) => a + b, 0) / fits.length) : '',
+     sub: 'of 100'},
+    {label: 'Websites read', value: n(c => !!c.profile_checked_at),
+     sub: n(c => !(c.website || c.domain)) + ' have no site'},
+  ]);
+}
+
+function companyWebsite(c) {
+  return c.website || (c.domain ? 'https://' + c.domain : '');
+}
+
+function companiesTableHtml(rows, visible) {
+  const columns = COMPANY_COLUMNS.map(col => Object.assign({}, col, {render: {
+    name: c => '<span class="ui-cell-main lists-name" title="' + escHtml(c.name) + '">' + uiDash(c.name || c.domain) + '</span><span class="ui-cell-sub lists-name">'
+      + listLink(companyWebsite(c), c.domain || String(companyWebsite(c)).replace(/^https?:\/\//i, '')) + '</span>',
+    fit: c => '<span title="' + escHtml((c.fit_reasons || []).join(' · ')) + '">'
+      + (typeof c.fit === 'number' ? listBar(c.fit) : uiDash('')) + '</span>',
+    status: c => companyStatusBadge(c.register_status, c.register_why),
+    industry: c => uiDash(c.industry),
+    location: c => uiDash(c.location),
+    contacts: c => escHtml(String(Number(c.contact_count) || 0)),
+    added: c => c.created_at ? '<span class="muted">' + relTime(c.created_at) + '</span>' : uiDash(''),
+  }[col.key]}));
+  columns.push({key: 'menu', header: '', align: 'right', render: c => uiRowMenu([
+    {label: 'View company', js: 'openCompany(' + jsq(c.id) + ')'},
+  ].concat(safeHref(companyWebsite(c))
+    ? [{label: 'Open website', js: 'window.open(' + jsq(companyWebsite(c)) + ',\'_blank\',\'noopener\')'}] : []))});
+  const shown = (visible || COMPANY_DEFAULT_COLUMNS).concat(['menu']);
+  return uiTable({columns, rows: rows || [], visible: shown, rowKey: c => c.id,
+    onRow: c => 'openCompany(' + jsq(c.id) + ')', empty: 'No companies match'});
+}
+
+// Latest value per signal (and per value, for multi-valued signals like roles).
+function companyLatestSignals(obs) {
+  const latest = {};
+  for (const o of obs || []) {
+    const key = o.signal_code + '|' + (o.value_text || o.value_num);
+    if (!latest[key] && (o.value_text || (o.value_num !== null && o.value_num !== undefined))) latest[key] = o;
+  }
+  return Object.values(latest);
+}
+
+function companySignalsTable(obs) {
+  const rows = companyLatestSignals(obs).slice(0, 40);
+  return uiTable({rows, empty: 'No signals recorded for this company yet', columns: [
+    {key: 'label', header: 'Signal', render: o => '<span class="ui-strong">' + uiDash(o.label || o.signal_code) + '</span>'},
+    {key: 'value', header: 'What was found', render: o => '<span class="lists-wrap">'
+      + uiDash(o.value_text || (o.value_num === null || o.value_num === undefined ? '' : String(o.value_num))) + '</span>'},
+    {key: 'source', header: 'Source', align: 'right', render: o => safeHref(o.evidence_url)
+      ? listLink(o.evidence_url, String(o.evidence_url).replace(/^https?:\/\/(www\.)?/i, '').split(/[/?#]/)[0])
+      : uiDash('')},
+  ]});
+}
+
+// Basic facts about one company: where it is, why it fits, what's been done,
+// and what Sellbird saw on its own site.
+function companyInfoCard(company, profile) {
+  const c = (profile && profile.company) || company || {};
+  const reg = (profile && profile.register) || {};
+  const latest = companyLatestSignals(profile && profile.observations);
+  const by = code => latest.filter(o => o.signal_code === code);
+  const list = (items, max) => items.slice(0, max).map(o => o.evidence_url && safeHref(o.evidence_url)
+    ? listLink(o.evidence_url, o.value_text || String(o.value_num))
+    : escHtml(o.value_text || String(o.value_num))).join('<br>');
+  const people = by('DECISION_MAKER_TITLE').length ? by('DECISION_MAKER_TITLE') : by('CONTACT_FOUND');
+  const form = by('CONTACT_FORM_URL')[0];
+  const status = reg.status || company.register_status || '';
+  const why = reg.why_not_contacted || company.register_why || '';
+  return uiCard({title: 'Details', body: listDetails([
+    ['Website', listLink(companyWebsite(c), c.domain || companyWebsite(c))],
+    ['Sector', escHtml(c.industry)],
+    ['Area', escHtml(c.location)],
+    ['Phone', escHtml(c.phone)],
+    ['Why selected', escHtml(reg.why_selected || (company.fit_reasons || []).join(' · '))],
+    ['Status', status ? companyStatusBadge(status) + (why ? ' <span class="lists-why">' + escHtml(why) + '</span>' : '') : ''],
+    ['People named on site', list(people, 8)],
+    ['Contact form', form ? listLink(form.value_text, form.value_text) : ''],
+    ['Hiring', list(by('HIRING_ROLE'), 6)],
+    ['Tech on website', escHtml(by('TECH_STACK').map(o => o.value_text).slice(0, 1).join(''))],
+  ])});
+}
+
+function companyContactsTable(contacts) {
+  // Phone and LinkedIn columns only when someone here has one.
+  const has = k => (contacts || []).some(p => p[k]);
+  const visible = ['name', 'email'].concat(has('phone') ? ['phone'] : [], has('linkedin_url') ? ['linkedin'] : [], ['stage', 'source']);
+  return uiTable({visible, rows: contacts || [], rowKey: p => p.id, onRow: p => 'openContactById(' + jsq(p.id) + ')',
+    empty: 'No contacts found at this company yet', columns: [
+      {key: 'name', header: 'Contact', render: p => contactName(p)
+        ? '<span class="ui-cell-main">' + escHtml(contactName(p)) + '</span><span class="ui-cell-sub">' + uiDash(p.title) + '</span>'
+        : '<span class="muted">General inbox</span>'},
+      {key: 'email', header: 'Email', render: p => p.email ? '<span class="ui-strong">' + escHtml(p.email) + '</span> ' + contactEmailBadge(p) : uiDash('')},
+      {key: 'phone', header: 'Phone', render: p => p.phone ? escHtml(p.phone) + (p.phone_verified ? ' ' + uiBadge('success', 'Verified', 'check') : '') : uiDash('')},
+      {key: 'linkedin', header: 'LinkedIn', render: p => safeHref(p.linkedin_url) ? listLink(p.linkedin_url, 'Profile') : uiDash('')},
+      {key: 'stage', header: 'Stage', render: p => listStatusBadge(p.status)},
+      {key: 'source', header: 'Source', align: 'right', render: p => p.source ? '<span class="muted">' + sourceLabel(p.source) + '</span>' : uiDash('')},
+    ]});
+}
+
+// One company: header with its status, a strip of numbers, its signals and
+// contacts, and the details Sellbird holds on it.
+function companyDetailPage(company, profile, contacts) {
+  company = company || {};
+  const c = (profile && profile.company) || company;
+  const people = contacts || [];
+  const obs = (profile && profile.observations) || [];
+  const codes = new Set(companyLatestSignals(obs).map(o => o.signal_code));
+  const verified = people.filter(p => contactEmailStatus(p) === 'verified').length;
+  const status = (profile && profile.register && profile.register.status) || company.register_status || '';
+  const site = companyWebsite(c);
+  const head = uiPageHead({
+    title: c.name || c.domain || 'Company',
+    sub: [c.domain, c.industry, c.location].filter(Boolean).join(' · '),
+    crumbs: [{label: 'Companies', js: 'closeCompany()'}],
+    actions: (safeHref(site) ? '<a class="btn btn-secondary btn-sm" href="' + safeHref(site)
+      + '" target="_blank" rel="noopener noreferrer">Open website</a>' : '')
+      + '<button class="btn btn-secondary btn-sm" onclick="downloadCsv(\'/api/export/companies.csv\', \'company-register.csv\', this)">'
+      + icon('download') + 'Export register</button>',
+  }).replace('</h2>', (status ? ' ' + companyStatusBadge(status) : '') + '</h2>');
+  const source = String(c.source || '').replace(/^discover:/, '');
+  return head
+    + uiMetricStrip([
+      {label: 'Fit score', value: typeof company.fit === 'number' ? company.fit : '', sub: 'of 100'},
+      {label: 'Signals found', value: codes.size, sub: 'on its own site and listings'},
+      {label: 'Contacts', value: people.length, sub: people.length ? verified + ' verified' : 'none found yet'},
+      {label: 'First found', value: c.created_at ? relTime(c.created_at) : '', sub: source ? sourceLabel(source) : ''},
+    ])
+    + '<div class="ui-grid lists-detail-grid">'
+    + uiCard({title: 'Signals found', action: escHtml(codes.size + ' signal' + (codes.size === 1 ? '' : 's')), body: companySignalsTable(obs)})
+    + uiCard({title: 'Contacts', action: escHtml(people.length + ' found'), body: companyContactsTable(people)})
+    + '<div class="ui-stack">' + companyInfoCard(company, profile)
+    + uiCard({title: 'Discovered', body: listDetails([
+      ['Found via', c.source_url ? listLink(c.source_url, 'search result') + (source ? ' · ' + sourceLabel(source) : '')
+        : (source ? sourceLabel(source) : '')],
+      ['First found', escHtml(String(c.created_at || '').slice(0, 10))],
+      ['Website read', c.profile_checked_at ? relTime(c.profile_checked_at) : ''],
+      ['Contacts looked for', c.prospects_checked_at ? relTime(c.prospects_checked_at) : ''],
+    ])})
+    + '</div></div>';
+}
+
+function showCompanyView(which) {
+  const list = document.getElementById('companies-list-view');
+  const detail = document.getElementById('companies-detail');
+  if (list) list.hidden = which !== 'list';
+  if (detail) detail.hidden = which === 'list';
+}
 
 async function loadCompanies() {
   companyDrill = false;
+  showCompanyView('list');
   const el = document.getElementById('companies-list');
   const data = await api('/api/companies');
   if (!data) { el.innerHTML = offlineState(); return; }
   _companies = data;
+  renderCompaniesPage(_companiesPage);
+}
+
+function companiesChips() {
+  const ch = _companyView.chips;
+  const counts = key => {
+    const m = {};
+    for (const c of _companies) if (c[key]) m[c[key]] = (m[c[key]] || 0) + 1;
+    return Object.entries(m).sort((a, b) => b[1] - a[1]).slice(0, 40)
+      .map(([k, n]) => ({key: k, label: k, count: n, on: ch[key] === k}));
+  };
+  const set = (k, v) => 'setCompanyChip(' + jsq(k) + ',' + jsq(v) + ')';
+  const fitLabels = {'50': '50 and up', '30': '30 to 49', '0': 'Under 30'};
+  const more = [['website:yes', 'Has a website'], ['website:no', 'No website'], ['contacts:1', 'Has contacts'],
+    ['contacted:1', 'Contacted']];
+  const moreOn = more.filter(([k]) => { const [f, v] = k.split(':'); return String(ch[f] || '') === (v === '1' ? 'true' : v); });
+  return listFilterChip({label: 'Industry', value: ch.industry || '', options: counts('industry'),
+      onPick: k => set('industry', k), clearJs: set('industry', '')})
+    + listFilterChip({label: 'Fit score', value: fitLabels[ch.fit] || '',
+      options: Object.entries(fitLabels).map(([k, l]) => ({key: k, label: l, on: ch.fit === k})),
+      onPick: k => set('fit', k), clearJs: set('fit', '')})
+    + listFilterChip({label: 'Location', value: ch.location || '', options: counts('location'),
+      onPick: k => set('location', k), clearJs: set('location', '')})
+    + listFilterChip({label: 'More filters', value: moreOn.map(m => m[1]).join(', '),
+      options: more.map(([k, l]) => ({key: k, label: l, on: moreOn.some(m => m[0] === k)})),
+      onPick: k => 'toggleCompanyMore(' + jsq(k) + ')', clearJs: 'clearCompanyMore()'});
+}
+
+function setCompanyChip(key, value) {
+  _companyView.chips[key] = value || '';
+  _companiesPage = 0;
+  renderCompaniesPage(0, true);
+}
+
+function toggleCompanyMore(k) {
+  const [f, v] = k.split(':');
+  const val = v === '1' ? true : v;
+  _companyView.chips[f] = _companyView.chips[f] === val ? '' : val;
+  _companiesPage = 0;
+  renderCompaniesPage(0, true);
+}
+
+function clearCompanyMore() {
+  for (const f of ['website', 'contacts', 'contacted']) _companyView.chips[f] = '';
+  renderCompaniesPage(0, true);
+}
+
+function setCompanyStatusTab(key) {
+  _companyView.chips.status = key === 'all' ? '' : key;
+  renderCompaniesPage(0);
+}
+
+// `chips` re-renders the filter row too. The 15-second refresh leaves it alone
+// while one of its menus is open.
+function renderCompaniesPage(page, chips) {
+  const el = document.getElementById('companies-list');
+  const metricsEl = document.getElementById('companies-metrics');
+  const tabsEl = document.getElementById('companies-tabs');
+  const chipsEl = document.getElementById('companies-chips');
+  const colsEl = document.getElementById('companies-cols');
+  const toolbar = document.getElementById('companies-toolbar');
+  const data = _companies;
   if (!data.length) {
+    metricsEl.innerHTML = ''; tabsEl.innerHTML = '';
+    if (toolbar) toolbar.hidden = true;
     el.innerHTML = emptyState(icon('companies'), 'No companies yet',
       'Confirm your <b>Signals</b>, then find businesses on the <b>Discover</b> tab. ' +
       'OpenStreetMap is free and needs no account.');
     return;
   }
-  renderCompaniesPage(_companiesPage);
-}
+  if (toolbar) toolbar.hidden = false;
+  metricsEl.innerHTML = companiesSummary(data);
 
-function renderCompaniesPage(page) {
-  const el = document.getElementById('companies-list');
-  const data = _companies;
-  const pages = Math.max(1, Math.ceil(data.length / COMPANIES_PER_PAGE));
+  // Count tabs: all, then each register status that has companies.
+  const base = companiesFilter(data, {q: _companyView.q, chips: Object.assign({}, _companyView.chips, {status: ''})});
+  const counts = {};
+  for (const c of base) counts[c.register_status] = (counts[c.register_status] || 0) + 1;
+  const known = COMPANY_STATUS_ORDER.filter(s => counts[s]).concat(Object.keys(counts).filter(s => s && !COMPANY_STATUS_ORDER.includes(s)));
+  const active = _companyView.chips.status || 'all';
+  tabsEl.innerHTML = listCountTabs([{key: 'all', label: 'All', count: base.length}]
+    .concat(known.map(s => ({key: s, label: companyStatusLabel(s), count: counts[s]})))
+    .concat(active !== 'all' && !counts[active] ? [{key: active, label: companyStatusLabel(active), count: 0}] : []),
+    active, k => 'setCompanyStatusTab(' + jsq(k) + ')');
+
+  if (chips || !chipsEl.innerHTML || !chipsEl.querySelector('details[open]')) chipsEl.innerHTML = companiesChips();
+  const visible = loadColumns('companies', COMPANY_DEFAULT_COLUMNS);
+  if (!colsEl.querySelector('details[open]')) {
+    colsEl.innerHTML = uiColumns('companies', COMPANY_COLUMNS, visible, 'setColumnsFrom(this, \'companies\', () => renderCompaniesPage(_companiesPage))');
+  }
+
+  const rows = companiesFilter(data, _companyView);
+  const pages = Math.max(1, Math.ceil(rows.length / COMPANIES_PER_PAGE));
   _companiesPage = Math.min(Math.max(0, page), pages - 1);
   const start = _companiesPage * COMPANIES_PER_PAGE;
-  let html = '<div class="table-card"><table class="nowrap"><thead><tr><th>Company</th>' +
-    '<th title="Company fit, 0-100: sector, decision maker, reachability, buying signal. Hover a score for why.">Fit</th>' +
-    '<th title="Hover a status for why the company was or wasn\'t contacted">Status</th>' +
-    '<th>Industry</th><th>Location</th><th class="num">Contacts</th><th>Added</th></tr></thead><tbody>';
-  data.slice(start, start + COMPANIES_PER_PAGE).forEach((c, j) => {
-    const i = start + j;
-    const website = c.website || (c.domain ? 'https://' + c.domain : '');
-    const domain = safeHref(website)
-      ? '<a href="' + safeHref(website) + '" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">' +
-        escHtml(c.domain || website.replace(/^https?:\/\//i, '')) + '</a>'
-      : escHtml(c.domain);
-    html += '<tr class="clickable" onclick="showCompanyContacts(' + i + ')">' +
-      '<td><div class="cell-stack"><span class="cell-main">' + escHtml(c.name) + '</span>' +
-        '<span class="cell-sub">' + domain + '</span></div></td>' +
-      '<td title="' + escHtml((c.fit_reasons || []).join(' · ')) + '">' +
-        (typeof c.fit === 'number' ? meterHtml(c.fit) : '') + '</td>' +
-      '<td title="' + escHtml(c.register_why || '') + '">' + escHtml(c.register_status || '') + '</td>' +
-      '<td>' + (c.industry ? '<span class="tag">' + escHtml(c.industry) + '</span>' : '') + '</td>' +
-      '<td>' + escHtml(c.location) + '</td>' +
-      '<td class="num">' + (c.contact_count || 0) + '</td>' +
-      '<td class="muted">' + relTime(c.created_at) + '</td></tr>';
-  });
-  const pager = pages > 1
-    ? ' &nbsp; <button class="btn btn-ghost btn-sm" ' + (_companiesPage === 0 ? 'disabled ' : '') +
-        'onclick="renderCompaniesPage(' + (_companiesPage - 1) + ')">&larr; Prev</button> ' +
-      'Page ' + (_companiesPage + 1) + ' of ' + pages +
-      ' <button class="btn btn-ghost btn-sm" ' + (_companiesPage >= pages - 1 ? 'disabled ' : '') +
-        'onclick="renderCompaniesPage(' + (_companiesPage + 1) + ')">Next &rarr;</button>'
-    : '';
-  el.innerHTML = html + '</tbody></table></div>' +
-    '<div class="table-foot">' + (start + 1) + '–' + Math.min(start + COMPANIES_PER_PAGE, data.length) +
-    ' of ' + data.length + ' compan' + (data.length === 1 ? 'y' : 'ies') + pager + '</div>';
+  const end = Math.min(start + COMPANIES_PER_PAGE, rows.length);
+  const filtered = rows.length !== data.length;
+  const summary = rows.length
+    ? (start + 1) + '–' + end + ' of ' + rows.length + (filtered ? ' matching' : ' compan' + (rows.length === 1 ? 'y' : 'ies'))
+      + ' · Page ' + (_companiesPage + 1) + ' of ' + pages
+    : '0 of ' + data.length + ' companies';
+  el.innerHTML = companiesTableHtml(rows.slice(start, end), visible)
+    + listPager(summary, _companiesPage > 0 ? 'renderCompaniesPage(' + (_companiesPage - 1) + ')' : null,
+      _companiesPage < pages - 1 ? 'renderCompaniesPage(' + (_companiesPage + 1) + ')' : null);
 }
 
-// Basic facts about one company, above its contacts: where it came from,
-// why it fits, what's been done, and what Sellbird saw on its own site.
-function companyInfoCard(company, profile) {
-  const c = (profile && profile.company) || company;
-  const reg = (profile && profile.register) || {};
-  const obs = (profile && profile.observations) || [];
-  const link = (url, text) => safeHref(url)
-    ? '<a href="' + safeHref(url) + '" target="_blank" rel="noopener noreferrer">' + escHtml(text || url) + '</a>'
-    : escHtml(text || url || '');
-  const website = c.website || (c.domain ? 'https://' + c.domain : '');
-  const row = (k, v) => v ? '<tr><td class="muted" style="width:170px;vertical-align:top">' + k +
-    '</td><td style="white-space:normal">' + v + '</td></tr>' : '';
-  const latest = {};
-  for (const o of obs) {
-    const key = o.signal_code + '|' + (o.value_text || o.value_num);
-    if (!latest[key] && (o.value_text || o.value_num !== null)) latest[key] = o;
-  }
-  const by = code => Object.values(latest).filter(o => o.signal_code === code);
-  const list = (items, max) => items.slice(0, max).map(o =>
-    (o.evidence_url ? link(o.evidence_url, o.value_text || String(o.value_num)) : escHtml(o.value_text || String(o.value_num)))
-  ).join('<br>');
-  const people = by('DECISION_MAKER_TITLE').length ? by('DECISION_MAKER_TITLE') : by('CONTACT_FOUND');
-  const form = by('CONTACT_FORM_URL')[0];
-  const shown = new Set(['DECISION_MAKER_TITLE', 'CONTACT_FOUND', 'CONTACT_FORM_URL', 'HIRING_ROLE', 'FOUND_IN_SERP', 'TECH_STACK']);
-  const other = Object.values(latest).filter(o => !shown.has(o.signal_code));
-  let html = '<div class="card" style="margin-bottom:16px"><div class="card-head"><h3>' + escHtml(c.name || c.domain) + '</h3>' +
-    '<span class="meta">' + (typeof company.fit === 'number' ? 'Fit ' + company.fit + ' / 100' : '') + '</span></div>' +
-    '<table><tbody>' +
-    row('Website', link(website, c.domain || website)) +
-    row('Sector', escHtml(c.industry)) +
-    row('Area', escHtml(c.location)) +
-    row('Why selected', escHtml(reg.why_selected || (company.fit_reasons || []).join(' · '))) +
-    row('Status', '<b>' + escHtml(reg.status || company.register_status || '') + '</b>' +
-      (reg.why_not_contacted || company.register_why ? ' — ' + escHtml(reg.why_not_contacted || company.register_why) : '')) +
-    row('People named on site', list(people, 8)) +
-    row('Contact form', form ? link(form.value_text, form.value_text) : '') +
-    row('Hiring', list(by('HIRING_ROLE'), 6)) +
-    row('Tech on website', escHtml(by('TECH_STACK').map(o => o.value_text).slice(0, 1).join(''))) +
-    row('Other signals', other.slice(0, 8).map(o => escHtml(o.label) + ': ' +
-      escHtml(o.value_text || String(o.value_num))).join('<br>')) +
-    row('Found via', c.source_url ? link(c.source_url, 'search result') + ' · ' + escHtml(c.source || '') : escHtml(c.source || '')) +
-    row('First found', escHtml((c.created_at || '').slice(0, 10))) +
-    '</tbody></table></div>';
-  return html;
+function companySearch(value) {
+  _companyView.q = value;
+  renderCompaniesPage(0);
 }
 
-async function showCompanyContacts(index) {
-  const company = _companies[index];
+async function openCompany(id) {
+  const company = _companies.find(c => c.id === id);
   if (!company) return;
   companyDrill = true;
-  const el = document.getElementById('companies-list');
+  const el = document.getElementById('companies-detail');
+  showCompanyView('detail');
+  el.innerHTML = '<div class="ui-empty"><div class="ui-empty__desc">Loading…</div></div>';
+  window.scrollTo(0, 0);
   const [data, profile] = await Promise.all([
     api('/api/companies/' + encodeURIComponent(company.id) + '/contacts'),
     api('/api/companies/' + encodeURIComponent(company.id) + '/profile'),
   ]);
-  let html = '<button class="btn btn-ghost btn-sm" onclick="loadCompanies()" style="margin-bottom:12px">' +
-    '&larr; All companies</button>' + companyInfoCard(company, profile) +
-    '<div class="card flush"><div class="card-head"><h3>Contacts</h3>' +
-    '<span class="meta">' + escHtml([company.industry, company.location].filter(Boolean).join(' · ')) + '</span></div>';
-  if (!data || !data.length) {
-    html += '<div class="empty"><div class="copy">No contacts found at this company yet.</div></div></div>';
-  } else {
-    html += '<table><thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>LinkedIn</th><th>Status</th><th>Source</th></tr></thead><tbody>';
-    for (const p of data) {
-      const phoneIcon = p.phone_verified ? ' <span class="muted">&#10003;</span>' : '';
-      html += '<tr><td><div class="cell-row"><span class="avatar">' + initials(p.first_name, p.last_name) + '</span>' +
-          '<div class="cell-stack"><span class="cell-main">' + escHtml(p.first_name) + ' ' + escHtml(p.last_name) + '</span>' +
-          '<span class="cell-sub">' + escHtml(p.title) + '</span></div></div></td>' +
-        '<td>' + escHtml(p.email) + emailTag(p) + '</td>' +
-        '<td>' + escHtml(p.phone) + phoneIcon + '</td>' +
-        '<td>' + (safeHref(p.linkedin_url) ? '<a href="' + safeHref(p.linkedin_url) + '" target="_blank" rel="noopener noreferrer">Profile</a>' : '') + '</td>' +
-        '<td>' + badge(p.status) + '</td><td class="muted">' + sourceLabel(p.source) + '</td></tr>';
-    }
-    html += '</tbody></table></div>';
+  if (!companyDrill) return;   // went back meanwhile
+  el.innerHTML = companyDetailPage(company, profile, data || []);
+}
+
+// Kept for anything that still opens a company by its row number.
+function showCompanyContacts(index) {
+  const company = _companies[index];
+  if (company) openCompany(company.id);
+}
+
+// From a contact: its company, loading the list first if needed.
+async function openCompanyById(id) {
+  goTab('companies');
+  if (!_companies.length || !_companies.some(c => c.id === id)) {
+    const data = await api('/api/companies');
+    if (data) _companies = data;
   }
-  el.innerHTML = html;
+  openCompany(id);
+}
+
+function closeCompany() {
+  loadCompanies();
+  window.scrollTo(0, 0);
 }
 
 async function submitFeedback(entityType, entityId, promptText) {
@@ -2374,6 +2682,9 @@ function fbCampaign(i) {
 // Search and status filter live outside the table, so the 15-second refresh
 // re-renders rows without losing what you typed.
 let _contactQuery = '', _contactFilter = 'all';
+let _contactEmail = '', _contactCompany = '', _contactsPage = 0;
+let _contactOpen = null, _contactExtras = {outbox: null};
+const CONTACTS_PER_PAGE = 50;
 const CONTACT_FILTERS = [
   ['all', 'All', null],
   ['todo', 'To write', ['new', 'queued']],
@@ -2381,28 +2692,36 @@ const CONTACT_FILTERS = [
   ['replied', 'Replied', ['replied', 'interested', 'meeting']],
   ['closed', 'Closed out', null],
 ];
+const CONTACT_COLUMNS = [
+  {key: 'name', header: 'Name'},
+  {key: 'email', header: 'Email'},
+  {key: 'email_status', header: 'Email status'},
+  {key: 'company', header: 'Company'},
+  {key: 'stage', header: 'Stage'},
+  {key: 'score', header: 'Score'},
+  {key: 'phone', header: 'Phone'},
+  {key: 'source', header: 'Source'},
+  {key: 'added', header: 'Added', align: 'right'},
+];
+const CONTACT_DEFAULT_COLUMNS = ['name', 'email', 'email_status', 'company', 'stage', 'score'];
 
-async function loadProspects() {
-  const el = document.getElementById('prospects-table');
-  const data = await api('/api/prospects');
-  if (!data) { el.innerHTML = offlineState(); return; }
-  _prospects = data;
-  if (!data.length) {
-    el.innerHTML = emptyState(icon('contacts'), 'No contacts yet',
-      'Sellbird hasn\'t found any prospects. Once it\'s running, the Scout agent searches the web for people matching your ideal customer profile in <b>sellbird.yaml</b>.');
-    return;
-  }
-  if (!document.getElementById('contact-rows')) {
-    el.innerHTML = '<div class="toolbar">' +
-      '<label class="search">' + icon('discover') +
-        '<input class="form-input" id="contact-search" type="search" placeholder="Search name, company, email" ' +
-        'aria-label="Search contacts" oninput="_contactQuery=this.value;renderContacts()"></label>' +
-      '<div class="segmented" id="contact-filters" role="group" aria-label="Filter by status"></div>' +
-      '</div><div id="contact-rows"></div>';
-    // A rebuild after an offline blip must show the search still applied.
-    document.getElementById('contact-search').value = _contactQuery;
-  }
-  renderContacts();
+function contactName(p) {
+  return [p.first_name, p.last_name].filter(Boolean).join(' ');
+}
+
+// Rows predating email_status fall back to the old verified flag.
+function contactEmailStatus(p) {
+  if (!p || !p.email) return '';
+  return p.email_status || (p.email_verified ? 'verified' : 'guess');
+}
+
+function contactEmailBadge(p) {
+  const s = contactEmailStatus(p);
+  if (!s || !own(STATUS, s)) return '';
+  const tone = {verified: 'success', risky: 'warning', invalid: 'danger'}[s] || 'neutral';
+  const iconName = {verified: 'check', invalid: 'close'}[s] || '';
+  return '<span title="Email ' + escHtml(statusMeta(s).label.toLowerCase()) + '">'
+    + uiBadge(tone, statusMeta(s).label, iconName) + '</span>';
 }
 
 function contactMatches(p, f) {
@@ -2413,51 +2732,247 @@ function contactMatches(p, f) {
   return !!(hit && hit[2] && hit[2].includes(p.status));
 }
 
-function setContactFilter(f) { _contactFilter = f; renderContacts(); }
+// Search (name, company, email, title), the stage tab, and the two chips.
+function contactsFilter(rows, {q = '', status = 'all', emailStatus = '', company = ''} = {}) {
+  const needle = String(q || '').trim().toLowerCase();
+  return (rows || []).filter(p =>
+    (!needle || [p.first_name, p.last_name, p.company, p.email, p.title].join(' ').toLowerCase().includes(needle))
+    && contactMatches(p, status || 'all')
+    && (!emailStatus || contactEmailStatus(p) === emailStatus)
+    && (!company || (p.company || '') === company));
+}
 
-function renderContacts() {
-  const rowsEl = document.getElementById('contact-rows');
-  const filtersEl = document.getElementById('contact-filters');
+function contactsSummary(rows) {
+  rows = rows || [];
+  const n = s => rows.filter(p => contactEmailStatus(p) === s).length;
+  const companies = new Set(rows.map(p => p.company_id || p.company).filter(Boolean)).size;
+  return uiMetricStrip([
+    {label: 'Contacts', value: rows.length, sub: (rows.length >= 200 ? 'latest 200 · ' : '')
+      + 'across ' + companies + ' compan' + (companies === 1 ? 'y' : 'ies')},
+    {label: 'Verified', value: n('verified'), sub: 'safe to send'},
+    {label: 'Catch-all', value: n('risky'), sub: 'domain accepts any address'},
+    {label: 'Invalid', value: n('invalid'), sub: 'never sent'},
+  ]);
+}
+
+function contactsTableHtml(rows, visible) {
+  const columns = CONTACT_COLUMNS.map(col => Object.assign({}, col, {render: {
+    name: p => '<span class="lists-person"><span class="lists-avatar">' + initials(p.first_name, p.last_name) + '</span>'
+      + (contactName(p)
+        ? '<span><span class="ui-cell-main lists-name">' + escHtml(contactName(p)) + '</span>'
+          + (p.title ? '<span class="ui-cell-sub lists-name">' + escHtml(p.title) + '</span>' : '') + '</span>'
+        : '<span class="muted">General inbox</span>') + '</span>',
+    email: p => p.email ? '<span class="lists-email">' + escHtml(p.email) + '</span>' : uiDash(''),
+    email_status: p => contactEmailBadge(p) || uiDash(''),
+    company: p => p.company ? '<span class="lists-name" title="' + escHtml(p.company) + '">' + escHtml(p.company) + '</span>' : uiDash(''),
+    stage: p => ['new', 'queued'].includes(p.status) ? uiBadge('neutral', statusMeta(p.status).label) : listStatusBadge(p.status),
+    score: p => (p.score || p.score === 0) ? listBar(p.score, 'brand') : uiDash(''),
+    phone: p => p.phone ? escHtml(p.phone) + (p.phone_verified ? ' <span class="verified" title="Phone verified">&#10003;</span>' : '') : uiDash(''),
+    source: p => p.source ? '<span class="muted">' + sourceLabel(p.source) + '</span>' : uiDash(''),
+    added: p => p.created_at ? '<span class="muted">' + relTime(p.created_at) + '</span>' : uiDash(''),
+  }[col.key]}));
+  columns.push({key: 'menu', header: '', align: 'right', render: p => uiRowMenu([
+    {label: 'Open contact', js: 'openContactById(' + jsq(p.id) + ')'},
+    {label: 'Leave feedback', js: 'fbProspectById(' + jsq(p.id) + ')'},
+  ].concat(p.status === 'opted_out' || p.opt_out_undone
+    ? [{label: p.status === 'opted_out' ? 'Why they opted out' : 'Opt-out history', js: 'openContact(' + jsq(p.id) + ', true)'}]
+    : []))});
+  // The email status column has no header, as in the design.
+  const cols = columns.map(c => c.key === 'email_status' ? Object.assign({}, c, {header: ''}) : c);
+  return uiTable({columns: cols, rows: rows || [], rowKey: p => p.id, visible: (visible || CONTACT_DEFAULT_COLUMNS).concat(['menu']),
+    onRow: p => 'openContactById(' + jsq(p.id) + ')', empty: 'No contacts match'});
+}
+
+// One contact: who they are, the emails to them, their company, and (when
+// they opted out, or you undid it) the opt-out record with its undo.
+function contactDetailPage(p, extras) {
+  extras = extras || {};
+  const index = Number(extras.index);
+  const emails = extras.outbox || [];
+  const name = contactName(p);
+  const optable = p.status === 'opted_out' || p.opt_out_undone || _optOut.id === p.id;
+  const head = uiPageHead({
+    title: name || p.email || 'Contact',
+    sub: (p.title ? p.title + ' · ' : (name ? '' : 'Shared inbox · ')) + (p.company || ''),
+    crumbs: [{label: 'Contacts', js: 'closeContact()'}],
+    actions: (optable ? '<button class="btn btn-secondary btn-sm" onclick="toggleOptOut(' + index + ')" aria-expanded="'
+        + (_optOut.id === p.id) + '" title="What made Sellbird stop emailing them">'
+        + (p.status === 'opted_out' ? 'Why they opted out' : 'Opt-out history') + '</button>' : '')
+      + '<button class="btn btn-secondary btn-sm" onclick="fbProspect(' + index + ')" title="Leave feedback on this contact">Leave feedback</button>',
+  }).replace('</h2>', (contactEmailBadge(p) ? ' ' + contactEmailBadge(p) : '') + '</h2>');
+  const emailsTable = extras.outbox === null
+    ? '<div class="ui-empty"><div class="ui-empty__desc">Loading…</div></div>'
+    : uiTable({rows: emails, empty: 'No emails to this contact in the Outbox', columns: [
+      {key: 'status', header: 'Status', render: o => listStatusBadge(o.status)},
+      {key: 'step', header: 'Step', render: o => o.kind === 'reply' ? 'Reply' : 'Email ' + escHtml(String(Number(o.step) || 1))},
+      {key: 'subject', header: 'Subject', render: o => '<span class="ui-strong lists-subject">' + uiDash(o.subject) + '</span>'},
+      {key: 'when', header: 'When', align: 'right', render: o => (o.sent_at || o.send_at)
+        ? '<span class="muted">' + (o.sent_at ? 'Sent ' : '') + relTime(o.sent_at || o.send_at) + '</span>' : uiDash('')},
+    ]});
+  const sourceLink = safeHref(p.source_url) ? ' · ' + listLink(p.source_url, 'where') : '';
+  return head
+    + uiMetricStrip([
+      {label: 'Stage', value: p.status ? statusMeta(p.status).label : '', sub: p.status === 'new' ? 'no email written yet' : ''},
+      {label: 'Emails', value: extras.outbox === null ? '' : emails.length, sub: 'in the Outbox'},
+      {label: 'Score', value: (p.score || p.score === 0) ? p.score : '', sub: 'of 100'},
+      {label: 'Found', value: p.created_at ? relTime(p.created_at) : '', sub: p.source ? sourceLabel(p.source) : ''},
+    ])
+    + (_optOut.id === p.id ? uiCard({title: 'Opt-out', body: optOutPanel(p)}) : '')
+    + '<div class="ui-grid lists-detail-grid">'
+    + uiCard({title: 'Emails to this contact', action: '<a href="#" onclick="goTab(\'outbox\');return false">Open Outbox</a>', body: emailsTable})
+    + '<div class="ui-stack">'
+    + uiCard({title: 'Details', body: listDetails([
+      ['Email', p.email ? '<span class="lists-email">' + escHtml(p.email) + '</span>' : ''],
+      ['Email status', contactEmailBadge(p)],
+      ['Title', escHtml(p.title || (name ? '' : 'General inbox'))],
+      ['Phone', p.phone ? escHtml(p.phone) + (p.phone_verified ? ' ' + uiBadge('success', 'Verified', 'check') : '') : ''],
+      ['LinkedIn', safeHref(p.linkedin_url) ? listLink(p.linkedin_url, 'Profile') : ''],
+      ['Source', p.source ? sourceLabel(p.source) + sourceLink : ''],
+      ['Seniority', escHtml(p.seniority)],
+      ['Added', escHtml(String(p.created_at || '').slice(0, 10))],
+    ])})
+    + uiCard({title: 'Company', action: p.company_id
+        ? '<a href="#" onclick="openCompanyById(' + jsq(p.company_id) + ');return false">Open</a>' : '',
+      body: listDetails([
+        ['Company', escHtml(p.company)],
+        ['Industry', escHtml(p.industry)],
+        ['Size', escHtml(p.company_size)],
+      ])})
+    + '</div></div>';
+}
+
+function showContactView(which) {
+  const list = document.getElementById('prospects-list-view');
+  const detail = document.getElementById('prospects-detail');
+  if (list) list.hidden = which !== 'list';
+  if (detail) detail.hidden = which === 'list';
+}
+
+async function loadProspects() {
+  const el = document.getElementById('prospects-table');
+  const data = await api('/api/prospects');
+  if (!data) { el.innerHTML = offlineState(); showContactView('list'); return; }
+  _prospects = data;
+  const search = document.getElementById('contact-search');
+  // A rebuild after an offline blip must show the search still applied.
+  if (search && search.value !== _contactQuery) search.value = _contactQuery;
+  renderContacts();
+}
+
+function setContactFilter(f) { _contactFilter = f; _contactsPage = 0; renderContacts(); }
+function setContactChip(kind, v) {
+  if (kind === 'email') _contactEmail = v; else _contactCompany = v;
+  _contactsPage = 0;
+  renderContacts(true);
+}
+function contactSearch(v) { _contactQuery = v; _contactsPage = 0; renderContacts(); }
+function contactsPage(n) { _contactsPage = n; renderContacts(); window.scrollTo(0, 0); }
+
+function contactsChips() {
+  const emailOpts = ['verified', 'risky', 'guess', 'invalid'].map(s => ({key: s, label: statusMeta(s).label,
+    count: _prospects.filter(p => contactEmailStatus(p) === s).length, on: _contactEmail === s}));
+  const m = {};
+  for (const p of _prospects) if (p.company) m[p.company] = (m[p.company] || 0) + 1;
+  const companyOpts = Object.entries(m).sort((a, b) => b[1] - a[1]).slice(0, 40)
+    .map(([k, n]) => ({key: k, label: k, count: n, on: _contactCompany === k}));
+  return listFilterChip({label: 'Email status', value: _contactEmail ? statusMeta(_contactEmail).label : '',
+      options: emailOpts, onPick: k => 'setContactChip(\'email\',' + jsq(k) + ')', clearJs: 'setContactChip(\'email\',\'\')'})
+    + listFilterChip({label: 'Company', value: _contactCompany, options: companyOpts,
+      onPick: k => 'setContactChip(\'company\',' + jsq(k) + ')', clearJs: 'setContactChip(\'company\',\'\')'});
+}
+
+// `chips` re-renders the filter row too; the refresh leaves an open menu alone.
+function renderContacts(chips) {
+  const rowsEl = document.getElementById('prospects-table');
+  const detailEl = document.getElementById('prospects-detail');
   if (!rowsEl) return;
-  const q = _contactQuery.trim().toLowerCase();
-  const found = p => !q || [p.first_name, p.last_name, p.company, p.email, p.title].join(' ').toLowerCase().includes(q);
-  filtersEl.innerHTML = CONTACT_FILTERS.map(f =>
-    '<button class="' + (f[0] === _contactFilter ? 'on' : '') + '" aria-pressed="' + (f[0] === _contactFilter) + '" onclick="setContactFilter(\'' + f[0] + '\')">' +
-      f[1] + ' <span class="n">' + _prospects.filter(p => contactMatches(p, f[0]) && found(p)).length + '</span></button>'
-  ).join('');
-
-  const rows = _prospects.map((p, i) => [p, i]).filter(([p]) => contactMatches(p, _contactFilter) && found(p));
-  if (!rows.length) {
-    rowsEl.innerHTML = '<div class="table-card">' + emptyState(icon('discover'), 'No matches',
-      'Nothing matches that search and filter.') + '</div>';
+  if (_contactOpen) {
+    const i = _prospects.findIndex(p => p.id === _contactOpen);
+    if (i >= 0) {
+      showContactView('detail');
+      detailEl.innerHTML = contactDetailPage(_prospects[i], Object.assign({index: i}, _contactExtras));
+      return;
+    }
+    _contactOpen = null;
+  }
+  showContactView('list');
+  const metricsEl = document.getElementById('prospects-metrics');
+  const tabsEl = document.getElementById('contact-filters');
+  const chipsEl = document.getElementById('contact-chips');
+  const colsEl = document.getElementById('contact-cols');
+  const toolbar = document.getElementById('prospects-toolbar');
+  if (!_prospects.length) {
+    metricsEl.innerHTML = ''; tabsEl.innerHTML = '';
+    if (toolbar) toolbar.hidden = true;
+    rowsEl.innerHTML = emptyState(icon('contacts'), 'No contacts yet',
+      'Sellbird hasn\'t found any prospects. Once it\'s running, the Scout agent searches the web for people matching your ideal customer profile in <b>sellbird.yaml</b>.');
     return;
   }
-  let html = '<div class="table-card"><table class="nowrap"><thead><tr><th>Name</th><th>Company</th><th>Email</th>' +
-    '<th>Score</th><th>Status</th><th>Source</th><th>Added</th><th></th></tr></thead><tbody>';
-  for (const [p, i] of rows) {
-    html += '<tr><td><div class="cell-row"><span class="avatar">' + initials(p.first_name, p.last_name) + '</span>' +
-        '<div class="cell-stack"><span class="cell-main">' + escHtml(p.first_name) + ' ' + escHtml(p.last_name) + '</span>' +
-        '<span class="cell-sub">' + escHtml(p.title) + '</span></div></div></td>' +
-      '<td>' + escHtml(p.company) + '</td>' +
-      '<td><div class="cell-stack"><span>' + escHtml(p.email) + '</span>' +
-        '<span class="cell-sub">' + [emailTag(p).trim(), p.phone ? escHtml(p.phone) +
-          (p.phone_verified ? ' <span class="verified" title="Phone verified">&#10003;</span>' : '') : '']
-          .filter(Boolean).join(' · ') + '</span>' +
-        '</div></td>' +
-      '<td>' + (p.score || p.score === 0 ? meterHtml(p.score) : '') + '</td>' +
-      '<td>' + badge(p.status) + '</td>' +
-      '<td class="muted">' + sourceLabel(p.source) + '</td>' +
-      '<td class="muted" style="white-space:nowrap">' + relTime(p.created_at) + '</td>' +
-      '<td><div class="cell-row">' + (p.status === 'opted_out' || p.opt_out_undone || _optOut.id === p.id
-        ? '<button class="btn btn-ghost btn-sm" onclick="toggleOptOut(' + i + ')" ' +
-          'aria-expanded="' + (_optOut.id === p.id) + '" title="What made Sellbird stop emailing them">' +
-          (p.status === 'opted_out' ? 'Why?' : 'Opt-out history') + '</button>' : '') +
-        '<button class="btn btn-ghost btn-sm row-action" onclick="fbProspect(' + i + ')" ' +
-        'title="Leave feedback on this contact">Feedback</button></div></td></tr>';
-    if (_optOut.id === p.id) html += '<tr class="detail-row"><td colspan="8">' + optOutPanel(p) + '</td></tr>';
+  if (toolbar) toolbar.hidden = false;
+  metricsEl.innerHTML = contactsSummary(_prospects);
+  const view = {q: _contactQuery, emailStatus: _contactEmail, company: _contactCompany};
+  tabsEl.innerHTML = listCountTabs(CONTACT_FILTERS.map(f => ({key: f[0], label: f[1],
+    count: contactsFilter(_prospects, Object.assign({}, view, {status: f[0]})).length})),
+    _contactFilter, k => 'setContactFilter(' + jsq(k) + ')');
+  if (chips || !chipsEl.innerHTML || !chipsEl.querySelector('details[open]')) chipsEl.innerHTML = contactsChips();
+  const visible = loadColumns('contacts', CONTACT_DEFAULT_COLUMNS);
+  if (!colsEl.querySelector('details[open]')) {
+    colsEl.innerHTML = uiColumns('contacts', CONTACT_COLUMNS, visible, 'setColumnsFrom(this, \'contacts\', () => renderContacts())');
   }
-  rowsEl.innerHTML = html + '</tbody></table></div>' +
-    '<div class="table-foot">' + rows.length + ' of ' + _prospects.length + ' contacts</div>';
+  const rows = contactsFilter(_prospects, Object.assign({}, view, {status: _contactFilter}));
+  const pages = Math.max(1, Math.ceil(rows.length / CONTACTS_PER_PAGE));
+  _contactsPage = Math.min(Math.max(0, _contactsPage), pages - 1);
+  const start = _contactsPage * CONTACTS_PER_PAGE;
+  const end = Math.min(start + CONTACTS_PER_PAGE, rows.length);
+  const summary = (rows.length > CONTACTS_PER_PAGE ? (start + 1) + '–' + end : rows.length) + ' of '
+    + _prospects.length + ' contacts' + (pages > 1 ? ' · Page ' + (_contactsPage + 1) + ' of ' + pages : '');
+  rowsEl.innerHTML = contactsTableHtml(rows.slice(start, end), visible)
+    + listPager(summary, _contactsPage > 0 ? 'contactsPage(' + (_contactsPage - 1) + ')' : null,
+      _contactsPage < pages - 1 ? 'contactsPage(' + (_contactsPage + 1) + ')' : null);
+}
+
+// The emails the Outbox holds for one person, from all of its lists.
+function outboxItemsFor(ob, id) {
+  return ['pending', 'approved', 'sent', 'failed'].flatMap(k => (ob && ob[k]) || [])
+    .filter(o => o.prospect_id === id)
+    .sort((a, b) => (Number(a.step) || 0) - (Number(b.step) || 0));
+}
+
+async function openContact(id, withOptOut) {
+  const i = _prospects.findIndex(p => p.id === id);
+  if (i < 0) return;
+  if (_contactOpen !== id) {
+    _contactOpen = id;
+    _contactExtras = {outbox: null};
+    window.scrollTo(0, 0);
+  }
+  renderContacts();
+  if (withOptOut && _optOut.id !== id) toggleOptOut(i);
+  const ob = await api('/api/outbox');
+  if (_contactOpen !== id) return;
+  _contactExtras = {outbox: ob && !ob.error ? outboxItemsFor(ob, id) : []};
+  renderContacts();
+}
+
+// From anywhere (a company's contacts, a row menu): open one contact.
+async function openContactById(id) {
+  if (currentTab !== 'prospects') goTab('prospects');
+  if (!_prospects.some(p => p.id === id)) {
+    const data = await api('/api/prospects');
+    if (data) _prospects = data;
+  }
+  openContact(id);
+}
+
+function closeContact() {
+  _contactOpen = null;
+  renderContacts(true);
+  window.scrollTo(0, 0);
+}
+
+function fbProspectById(id) {
+  const i = _prospects.findIndex(p => p.id === id);
+  if (i >= 0) fbProspect(i);
 }
 
 // Why someone is opted out, and undoing it. Sellbird never moves anyone off
@@ -2474,6 +2989,7 @@ const OPT_OUT_RULES = {
 async function toggleOptOut(i) {
   const p = _prospects[i];
   if (!p) return;
+  if (_contactOpen !== p.id) { openContact(p.id, true); return; }
   if (_optOut.id === p.id) { _optOut = {id: null, data: null, armed: false, busy: false}; renderContacts(); return; }
   _optOut = {id: p.id, data: null, armed: false, busy: false};
   renderContacts();

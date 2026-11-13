@@ -236,21 +236,49 @@
 
 <!-- Companies -->
 <div id="companies" class="section">
-  <div class="section-head"><div><h2>Companies</h2><p>Organizations Sellbird has researched, best fit first. Click a row to see its contacts.</p></div>
-    <div><button class="btn btn-secondary btn-sm" onclick="downloadCsv('/api/export/companies.csv', 'company-register.csv', this)"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Export register</button></div></div>
-  <div id="companies-list"></div>
+  <div class="ui-page" id="companies-list-view">
+    <div class="ui-pagehead"><div class="ui-pagehead__text">
+      <h2 class="ui-pagehead__title">Companies</h2>
+      <div class="ui-pagehead__sub">Organizations Sellbird has researched, best fit first. Open a company to see its signals and contacts.</div>
+    </div><div class="ui-pagehead__actions">
+      <button class="btn btn-secondary" onclick="downloadCsv('/api/export/companies.csv', 'company-register.csv', this)"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Export register</button>
+    </div></div>
+    <div id="companies-metrics"></div>
+    <div id="companies-tabs"></div>
+    <div class="ui-toolbar lists-toolbar" id="companies-toolbar">
+      <label class="ui-search"><svg class="icon" aria-hidden="true"><use href="#i-discover"/></svg>
+        <input id="company-search" type="search" placeholder="Search name or domain" aria-label="Search companies" oninput="companySearch(this.value)"></label>
+      <div class="ui-chips" id="companies-chips"></div>
+      <span class="spacer"></span>
+      <div id="companies-cols"></div>
+    </div>
+    <div id="companies-list"></div>
+  </div>
+  <div class="ui-page" id="companies-detail" hidden></div>
 </div>
 
 <!-- Contacts -->
 <div id="prospects" class="section">
-  <div class="section-head">
-    <div><h2>Contacts</h2><p>People Sellbird has found, how sure it is of their address, and where each one stands.</p></div>
-    <div class="page-actions">
-      <button class="btn btn-secondary btn-sm" onclick="downloadCsv('/api/export/prospects.csv', 'prospects.csv', this)"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Export deliverable</button>
-      <button class="btn btn-ghost btn-sm" onclick="downloadCsv('/api/export/prospects.csv?all=true', 'prospects-all.csv', this)">Export all</button>
+  <div class="ui-page" id="prospects-list-view">
+    <div class="ui-pagehead"><div class="ui-pagehead__text">
+      <h2 class="ui-pagehead__title">Contacts</h2>
+      <div class="ui-pagehead__sub">People Sellbird has found, how sure it is of their address, and where each one stands. Open a contact to see every email.</div>
+    </div><div class="ui-pagehead__actions">
+      <button class="btn btn-primary" onclick="downloadCsv('/api/export/prospects.csv', 'prospects.csv', this)"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Export deliverable</button>
+      <button class="btn btn-secondary" onclick="downloadCsv('/api/export/prospects.csv?all=true', 'prospects-all.csv', this)">Export all</button>
+    </div></div>
+    <div id="prospects-metrics"></div>
+    <div id="contact-filters"></div>
+    <div class="ui-toolbar lists-toolbar" id="prospects-toolbar">
+      <label class="ui-search"><svg class="icon" aria-hidden="true"><use href="#i-discover"/></svg>
+        <input id="contact-search" type="search" placeholder="Search name, company, email" aria-label="Search contacts" oninput="contactSearch(this.value)"></label>
+      <div class="ui-chips" id="contact-chips"></div>
+      <span class="spacer"></span>
+      <div id="contact-cols"></div>
     </div>
+    <div id="prospects-table"></div>
   </div>
-  <div id="prospects-table"></div>
+  <div class="ui-page" id="prospects-detail" hidden></div>
 </div>
 
 <!-- Campaigns -->
