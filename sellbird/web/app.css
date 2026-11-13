@@ -1398,3 +1398,4 @@ main.content { padding-top: 0; }
 .ui-table td:has(> .ui-cell-sub) { padding-top: 6px; padding-bottom: 6px; }
 .setup-card .check-item { padding: 6px 8px; }
 .setup-card .bar { margin-bottom: 0 !important; }
+.ui-menu > summary::before { content: none; display: none; }
