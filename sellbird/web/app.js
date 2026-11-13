@@ -1394,14 +1394,56 @@ function pageCohort(dir) {
 
 // ── Settings ──
 
+let _settingsData = null, _settingsTab = 'sending';
+const PROVIDER_LABELS = {
+  gmail: 'Gmail', microsoft: 'Microsoft 365', smtp: 'SMTP', instantly: 'Instantly',
+};
+
+// The four facts over the Settings tabs. `s` is /api/settings, `m` /api/sending-mode.
+function settingsSummary(s, m) {
+  const st = s || {};
+  const prov = st.provider || '';
+  const who = prov === 'smtp' ? st.smtp_username
+    : prov === 'gmail' ? (st.gmail_authorized ? 'signed in' : st.gmail_client_id ? 'not signed in yet' : 'not set up')
+    : prov === 'microsoft' ? (st.m365_authorized ? 'signed in' : st.m365_client_id ? 'not signed in yet' : 'not set up')
+    : prov === 'instantly' ? (st.instantly_api_key_set ? 'API key saved' : 'no API key') : '';
+  const verifiers = [['Reoon', st.reoon_api_key_set], ['ZeroBounce', st.zerobounce_api_key_set], ['Hunter', st.hunter_api_key_set]]
+    .filter(v => v[1]).map(v => v[0]);
+  const optional = [st.linkedin_email || st.linkedin_password_set, st.cloudflare_account_id || st.cloudflare_api_token_set]
+    .filter(Boolean).length;
+  const auto = m && m.mode === 'autopilot';
+  return uiMetricStrip([
+    {label: 'Sending mode', value: m ? (auto ? 'Autopilot' : 'Approval') : null,
+     sub: m ? (auto ? 'Sellbird sends on its own' : 'you approve every email') : ''},
+    {label: 'Email provider', value: s ? (own(PROVIDER_LABELS, prov) || prov || null) : null, sub: who || ''},
+    {label: 'Verifiers', value: s ? verifiers.length + ' set' : null, sub: verifiers.join(', ') || (s ? 'none yet' : '')},
+    {label: 'Optional services', value: s ? optional + ' of 2' : null, sub: 'LinkedIn, Cloudflare'},
+  ]);
+}
+
+function renderSettingsSummary() {
+  const el = document.getElementById('settings-summary');
+  if (el) el.innerHTML = settingsSummary(_settingsData, _sendingMode);
+}
+
+// Every panel stays in the page (each field keeps its id); the tabs only show one.
+function showSettingsTab(key, btn) {
+  _settingsTab = key;
+  document.querySelectorAll('#settings [data-settings-panel]').forEach(p => { p.hidden = p.dataset.settingsPanel !== key; });
+  document.querySelectorAll('#settings .ui-tab[data-tab]').forEach(t => t.setAttribute('aria-selected', String(t.dataset.tab === key)));
+}
+
 async function loadSettings() {
   const data = await api('/api/settings');
   if (!data) return;
+  _settingsData = data;
+  renderSettingsSummary();
 
   // Active provider indicator
   const prov = data.provider || 'instantly';
   const provEl = document.getElementById('active-provider');
-  if (provEl) provEl.textContent = prov;
+  if (provEl) provEl.textContent = own(PROVIDER_LABELS, prov) || prov;
+  document.querySelectorAll('#settings [data-provider-active]').forEach(b => { b.hidden = b.dataset.providerActive !== prov; });
 
   // Secret fields never echo a value — show a "saved" placeholder instead.
   const savedPh = (id, isSet, base) => {
@@ -1413,8 +1455,8 @@ async function loadSettings() {
   const tag = (id, ok, okLabel) => {
     const el = document.getElementById(id);
     if (!el) return;
-    el.className = 'email-tag ' + (ok ? 'verified' : 'guess');
-    el.textContent = ok ? okLabel : 'not set';
+    el.className = 'ui-badge ' + (ok ? 'is-success' : 'is-neutral');
+    el.textContent = ok ? okLabel : 'Not set';
   };
 
   // Non-secret values repopulate
@@ -1445,22 +1487,22 @@ async function loadSettings() {
   const g = document.getElementById('gmail-status');
   if (g) {
     const realId = /^\d+-[0-9a-z]+\.apps\.googleusercontent\.com$/.test((data.gmail_client_id || '').trim());
-    if (data.gmail_client_id && !realId) { g.className = 'email-tag invalid'; g.textContent = 'client ID isn\'t real'; }
-    else if (data.gmail_authorized) { g.className = 'email-tag verified'; g.textContent = 'authorized'; }
-    else if (data.gmail_client_secret_set) { g.className = 'email-tag risky'; g.textContent = 'sign in on Inboxes'; }
-    else { g.className = 'email-tag guess'; g.textContent = 'not set up'; }
+    if (data.gmail_client_id && !realId) { g.className = 'ui-badge is-danger'; g.textContent = 'client ID isn\'t real'; }
+    else if (data.gmail_authorized) { g.className = 'ui-badge is-success'; g.textContent = 'authorized'; }
+    else if (data.gmail_client_secret_set) { g.className = 'ui-badge is-warning'; g.textContent = 'sign in on Inboxes'; }
+    else { g.className = 'ui-badge is-neutral'; g.textContent = 'Not set up'; }
   }
   const m = document.getElementById('m365-status');
   if (m) {
     const realM = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test((data.m365_client_id || '').trim());
-    if (data.m365_client_id && !realM) { m.className = 'email-tag invalid'; m.textContent = 'client ID isn\'t real'; }
-    else if (data.m365_authorized) { m.className = 'email-tag verified'; m.textContent = 'authorized'; }
-    else if (data.m365_client_id) { m.className = 'email-tag risky'; m.textContent = 'sign in on Inboxes'; }
-    else { m.className = 'email-tag guess'; m.textContent = 'not set up'; }
+    if (data.m365_client_id && !realM) { m.className = 'ui-badge is-danger'; m.textContent = 'client ID isn\'t real'; }
+    else if (data.m365_authorized) { m.className = 'ui-badge is-success'; m.textContent = 'authorized'; }
+    else if (data.m365_client_id) { m.className = 'ui-badge is-warning'; m.textContent = 'sign in on Inboxes'; }
+    else { m.className = 'ui-badge is-neutral'; m.textContent = 'Not set up'; }
   }
-  tag('reoon-status', data.reoon_api_key_set, 'set');
-  tag('zerobounce-status', data.zerobounce_api_key_set, 'set');
-  tag('hunter-status', data.hunter_api_key_set, 'set');
+  tag('reoon-status', data.reoon_api_key_set, 'Set');
+  tag('zerobounce-status', data.zerobounce_api_key_set, 'Set');
+  tag('hunter-status', data.hunter_api_key_set, 'Set');
 }
 
 function saveGmail() {
@@ -1556,15 +1598,42 @@ async function testInstantly() {
 
 // ── Controls ──
 
+function controlsBadge(data) {
+  if (!data) return uiBadge('danger', 'Offline');
+  return data.running ? uiBadge('success', 'Running', 'check') : uiBadge('neutral', 'Stopped');
+}
+
+// The Agent card: what the loop is doing, and the one button that changes it.
+function controlsAgentCard(data) {
+  if (!data) {
+    return uiCard({title: 'Agent', body: '<p class="usage-note">The dashboard can\'t reach its server, so it can\'t tell whether Sellbird is running.</p>'});
+  }
+  const running = !!data.running;
+  const details = '<dl class="ui-details ui-details--stacked">'
+    + '<div><dt>Status</dt><dd>' + controlsBadge(data) + '</dd></div>'
+    + '<div><dt>PID</dt><dd class="ctrl-mono">' + uiDash(running && data.pid ? String(data.pid) : '') + '</dd></div>'
+    + '<div><dt>Started</dt><dd>' + (running && data.started_at ? formatDate(data.started_at) : uiDash('')) + '</dd></div>'
+    + '</dl>';
+  const note = running ? '' : '<p class="usage-note">Sellbird wakes every few minutes, does what needs doing, and sleeps.</p>';
+  const btn = running
+    ? '<button class="btn btn-danger btn-sm" id="btn-stop" onclick="stopSellbird()">Stop Sellbird</button>'
+    : '<button class="btn btn-primary btn-sm" id="btn-start" onclick="startSellbird()">Start Sellbird</button>';
+  return uiCard({title: 'Agent', body: details + note + '<div class="ctrl-actions">' + btn + '</div>'});
+}
+
 async function loadSellbirdStatus() {
   const data = await api('/api/sellbird/status');
   const headerDot = document.getElementById('header-dot');
   const headerText = document.getElementById('header-status-text');
 
   if (_locked) return;  // the header already says "Locked"
+  const badgeEl = document.getElementById('controls-badge');
+  const agentEl = document.getElementById('controls-agent');
   if (!data) {
     headerDot.className = 'status-dot offline';
     headerText.textContent = 'Offline';
+    if (badgeEl) badgeEl.innerHTML = controlsBadge(null);
+    if (agentEl) agentEl.innerHTML = controlsAgentCard(null);
     if (!_topbar.busy) { _topbar = {..._topbar, running: null}; renderTopbar(); }
     return;
   }
@@ -1573,42 +1642,34 @@ async function loadSellbirdStatus() {
 
   headerDot.className = 'status-dot ' + (running ? 'running' : 'stopped');
   headerText.textContent = running ? 'Sellbird is running' : 'Sellbird is stopped';
-  document.getElementById('control-dot').className = 'dot ' + (running ? 'running' : 'stopped');
-  const label = document.getElementById('control-label');
-  label.className = 'label ' + (running ? 'running' : 'stopped');
-  label.textContent = running ? 'Running' : 'Stopped';
-
-  const meta = document.getElementById('control-meta');
-  if (running && data.pid) {
-    let info = 'PID ' + escHtml(String(data.pid));
-    if (data.started_at) info += ' &middot; started ' + formatDate(data.started_at);
-    meta.innerHTML = info;
-  } else {
-    meta.innerHTML = 'Sellbird wakes every few minutes, does what needs doing, and sleeps.';
-  }
-
-  document.getElementById('btn-start').style.display = running ? 'none' : '';
-  document.getElementById('btn-stop').style.display = running ? '' : 'none';
+  if (badgeEl) badgeEl.innerHTML = controlsBadge(data);
+  if (agentEl) agentEl.innerHTML = controlsAgentCard(data);
 }
 
 async function startSellbird() {
   const btn = document.getElementById('btn-start');
-  btn.disabled = true;
+  if (btn) btn.disabled = true;
   const data = await api('/api/sellbird/start', {method: 'POST'});
   if (data && data.success) showToast('Sellbird started.', 'success');
   else showToast((data && data.message) || 'Failed to start.', 'error');
-  btn.disabled = false;
+  if (btn) btn.disabled = false;
   loadSellbirdStatus();
 }
 
 async function stopSellbird() {
   const btn = document.getElementById('btn-stop');
-  btn.disabled = true;
+  if (btn) btn.disabled = true;
   const data = await api('/api/sellbird/stop', {method: 'POST'});
   if (data && data.success) showToast('Sellbird stopped.', 'success');
   else showToast((data && data.message) || 'Failed to stop.', 'error');
-  btn.disabled = false;
+  if (btn) btn.disabled = false;
   loadSellbirdStatus();
+}
+
+// Help: "On this page" scrolls without touching the URL hash (it carries the token).
+function helpJump(id) {
+  const el = document.getElementById(id);
+  if (el) el.scrollIntoView({behavior: 'smooth', block: 'start'});
 }
 
 // ── Top bar: the running switch, refresh, and what needs you ──
@@ -1653,7 +1714,7 @@ async function loadLogs() {
     el.textContent = data.lines.join('\n');
     if (stick) el.scrollTop = el.scrollHeight;
   } else {
-    el.textContent = 'No logs yet. Start Sellbird to see activity.';
+    el.textContent = '# No logs yet. Start Sellbird to see activity.';
   }
 }
 
@@ -1702,240 +1763,108 @@ function quotaCardHtml(data) {
   const provider = data && data.quota_provider;
   if (!provider) return '';
   const title = provider === 'codex' ? 'Codex (ChatGPT plan) Quota' : 'Claude Subscription Quota';
-  let html = '<h2>' + escHtml(title) + '</h2>';
+  const head = '<section class="ui-card usage-quota"><div class="ui-card__head"><h3 class="ui-card__title">'
+    + escHtml(title) + '</h3></div>';
   if (!data.quota || !Object.keys(data.quota).length) {
     const why = provider === 'codex'
       ? "Quota unavailable: Sellbird couldn't read your ChatGPT plan's limits (check codex login, the Codex CLI version, and network)."
       : "Quota unavailable: Sellbird couldn't read your Claude subscription's limits (check claude login and network).";
-    return html + '<p class="muted">' + escHtml(why) + ' Until it can, budgets count Sellbird\'s own calls.</p>';
+    return head + '<p class="usage-note">' + escHtml(why) + ' Until it can, budgets count Sellbird\'s own calls.</p></section>';
   }
   const labels = {five_hour: '5-hour window', seven_day: 'Weekly', primary: 'Primary window',
                   secondary: 'Secondary window', limit_reached: 'Usage limit reached'};
+  let html = '<div class="usage-metrics">';
   for (const [key, w] of Object.entries(data.quota)) {
-    const pct = Math.min(100, Math.max(0, w.utilization || 0));
-    const color = pct >= 80 ? 'yellow' : 'green';
-    const resets = w.resets_at ? 'resets ' + formatDate(w.resets_at) : '';
-    html += '<div class="progress-wrap">' +
-      '<div class="progress-label">' +
-        '<span class="text">' + escHtml(labels[key] || key) + (resets ? ' &middot; ' + escHtml(resets) : '') + '</span>' +
-        '<span class="pct">' + pct.toFixed(0) + '%</span>' +
-      '</div>' +
-      '<div class="progress-bar"><div class="progress-fill ' + color + '" style="width:' + pct + '%"></div></div>' +
-    '</div>';
+    const pct = Math.min(100, Math.max(0, Number((w || {}).utilization) || 0));
+    const resets = w && w.resets_at ? 'resets ' + formatDate(w.resets_at) : '';
+    html += '<div class="ui-metric"><div class="ui-metric__label">' + escHtml(labels[key] || key) + '</div>'
+      + '<div class="ui-metric__value' + (pct >= 80 ? ' is-high' : '') + '">' + pct.toFixed(0) + '% used</div>'
+      + (resets ? '<div class="ui-metric__sub">' + escHtml(resets) + '</div>' : '') + '</div>';
   }
-  return html;
+  return head + html + '</div></section>';
+}
+
+// Calls today, this week and this month; tokens as the caption.
+function usageCallsCard(totals) {
+  const t = totals || {};
+  const m = (label, p, sub) => '<div class="ui-metric"><div class="ui-metric__label">' + label + '</div>'
+    + '<div class="ui-metric__value">' + ((p || {}).calls || 0) + '</div><div class="ui-metric__sub">' + sub + '</div></div>';
+  const io = p => 'out ' + fmtTokens((p || {}).output_tokens) + ' · in ' + fmtTokens((p || {}).input_tokens);
+  return uiCard({title: 'Calls', body: '<div class="usage-metrics usage-metrics--3">'
+    + m('Today', t.today, io(t.today)) + m('Last 7 days', t.week, io(t.week))
+    + m('Last 30 days', t.month, 'cached ' + fmtTokens((t.month || {}).cache_read_tokens)) + '</div>'});
+}
+
+// The last 14 calendar days (UTC, as the server groups them), missing days as 0.
+function usageDays(byDay, todayIso) {
+  const have = {};
+  (byDay || []).forEach(d => { if (d && d.day) have[d.day] = d; });
+  const end = new Date((todayIso || new Date().toISOString().slice(0, 10)) + 'T00:00:00Z');
+  return Array.from({length: 14}, (_, i) => {
+    const day = new Date(end - (13 - i) * 86400000).toISOString().slice(0, 10);
+    const d = have[day] || {};
+    return {day, output_tokens: Number(d.output_tokens) || 0, calls: Number(d.calls) || 0};
+  });
+}
+
+function usageDailyCard(byDay, todayIso) {
+  const days = usageDays(byDay, todayIso);
+  const max = Math.max(...days.map(d => d.output_tokens), 0);
+  const label = iso => new Date(iso + 'T00:00:00Z').toLocaleDateString('en-GB', {day: 'numeric', month: 'short', timeZone: 'UTC'});
+  const bars = days.map(d => '<span class="usage-bar' + (d.output_tokens ? ' on' : '') + '" style="height:'
+    + (d.output_tokens && max ? Math.max(2, Math.round(d.output_tokens / max * 100)) : 2) + '%" title="'
+    + escHtml(label(d.day) + ': ' + fmtTokens(d.output_tokens) + ' out, ' + d.calls + ' calls') + '"></span>').join('');
+  return uiCard({title: 'Output tokens per day', action: escHtml('Last 14 days · peak ' + fmtTokens(max)),
+    body: '<div class="usage-chart" role="img" aria-label="Output tokens per day">' + bars + '</div>'
+      + '<div class="usage-axis"><span>' + escHtml(label(days[0].day)) + '</span><span>' + escHtml(label(days[13].day)) + '</span></div>'});
+}
+
+// By agent / task / model (and provider, when more than Claude ran).
+function usageTabs(data, tab) {
+  const d = data || {};
+  const providers = d.by_provider || [];
+  const tabs = [];
+  if (providers.length > 1 || (providers.length === 1 && providers[0].provider !== 'claude'))
+    tabs.push({key: 'provider', label: 'By provider'});
+  tabs.push({key: 'agent', label: 'By agent'}, {key: 'task', label: 'By task'}, {key: 'model', label: 'By model'});
+  const active = tabs.some(t => t.key === tab) ? tab : 'agent';
+  const name = active.charAt(0).toUpperCase() + active.slice(1);
+  const rows = d['by_' + active] || [];
+  const table = rows.length ? uiTable({
+    columns: [
+      {key: active, header: name, render: r => '<span class="usage-name">' + uiDash(r[active]) + '</span>'},
+      {key: 'calls', header: 'Calls', align: 'right', render: r => '<span class="ui-strong">' + (Number(r.calls) || 0) + '</span>'},
+      {key: 'input_tokens', header: 'Input', align: 'right', render: r => escHtml(fmtTokens(r.input_tokens))},
+      {key: 'output_tokens', header: 'Output', align: 'right', render: r => '<span class="ui-strong">' + escHtml(fmtTokens(r.output_tokens)) + '</span>'},
+      {key: 'cache_read_tokens', header: 'Cache read', align: 'right', render: r => escHtml(fmtTokens(r.cache_read_tokens))},
+    ],
+    rows,
+  }) : uiCard({body: uiEmpty('No usage recorded yet',
+    'Once Sellbird starts making model calls (Claude or Codex), every one is logged here with exact calls and tokens by provider, agent and task.')});
+  return uiTabs(tabs, active, k => 'setUsageTab(' + jsq(k) + ')') + '<div class="usage-table">' + table + '</div>';
+}
+
+let _usage = null, _usageTab = 'agent';
+function setUsageTab(k) {
+  _usageTab = k;
+  const el = document.getElementById('usage-tables');
+  if (el) el.innerHTML = usageTabs(_usage, _usageTab);
 }
 
 async function loadUsage() {
   const data = await api('/api/usage');
-  const statsEl = document.getElementById('usage-stats');
-  if (!data) { statsEl.innerHTML = offlineState(); return; }
-
-  const quotaEl = document.getElementById('usage-quota');
-  const qHtml = quotaCardHtml(data);
-  quotaEl.innerHTML = qHtml;
-  quotaEl.style.display = qHtml ? 'block' : 'none';
-
-  // Totals cards — usage-first (calls is the headline; tokens as chips).
-  // No dollars: on a subscription plan usage isn't billed per token.
-  const t = data.totals || {};
-  const card = (label, p) => {
-    p = p || {};
-    return '<div class="stat-card"><div class="label">' + label + '</div>' +
-      '<div class="value">' + (p.calls || 0) + '</div>' +
-      '<div class="breakdown">' +
-        '<span class="chip">calls</span>' +
-        '<span class="chip">out <b>' + fmtTokens(p.output_tokens) + '</b></span>' +
-        '<span class="chip">in <b>' + fmtTokens(p.input_tokens) + '</b></span>' +
-        '<span class="chip">cached <b>' + fmtTokens(p.cache_read_tokens) + '</b></span>' +
-      '</div></div>';
-  };
-  statsEl.innerHTML = card('Today', t.today) + card('Last 7 Days', t.week) + card('Last 30 Days', t.month);
-
-  // Daily columns — output tokens per day (the work done)
-  const dailyEl = document.getElementById('usage-daily');
-  const days = (data.by_day || []).slice(-30);
-  if (days.length) {
-    const maxOut = Math.max(...days.map(d => d.output_tokens || 0), 1);
-    dailyEl.innerHTML = '<h2>Output tokens per day <span class="hint muted" style="font-weight:400">last ' +
-      days.length + ' days · peak ' + fmtTokens(maxOut) + '</span></h2>' +
-      '<div class="chart-cols" role="img" aria-label="Output tokens per day">' + days.map(d =>
-        '<span class="col" title="' + escHtml(d.day || '') + ': ' + fmtTokens(d.output_tokens) + ' out, ' +
-          (d.calls || 0) + ' calls"><i style="height:' + Math.max(2, (d.output_tokens || 0) / maxOut * 100) + '%"></i></span>'
-      ).join('') + '</div>' +
-      '<div class="chart-axis"><span>' + escHtml(days[0].day || '') + '</span><span>' +
-        escHtml(days[days.length - 1].day || '') + '</span></div>';
-    dailyEl.style.display = 'block';
-  } else {
-    dailyEl.style.display = 'none';
-  }
-
-  // Breakdown tables — calls + tokens, no cost column
-  const tablesEl = document.getElementById('usage-tables');
-  const table = (title, rows, keyName) => {
-    if (!rows || !rows.length) return '';
-    const max = Math.max(...rows.map(r => r.calls || 0), 1);
-    let h = '<div class="card flush"><div class="card-head"><h3>' + title + '</h3></div><table><thead><tr>' +
-      '<th>' + keyName + '</th><th>Calls</th><th class="num">Input</th><th class="num">Output</th><th class="num">Cache read</th>' +
-      '</tr></thead><tbody>';
-    for (const r of rows) {
-      h += '<tr><td class="cell-main">' + escHtml(String(r[keyName.toLowerCase()] || '')) + '</td>' +
-        '<td><span class="meter-row"><span class="bar" style="width:120px"><span style="width:' +
-          (100 * (r.calls || 0) / max) + '%;background:var(--accent)"></span></span><span class="v">' + (r.calls || 0) + '</span></span></td>' +
-        '<td class="num muted">' + fmtTokens(r.input_tokens) + '</td>' +
-        '<td class="num">' + fmtTokens(r.output_tokens) + '</td>' +
-        '<td class="num muted">' + fmtTokens(r.cache_read_tokens) + '</td></tr>';
-    }
-    return h + '</tbody></table></div>';
-  };
-
-  const anyRows = (data.by_agent || []).length || (data.by_task || []).length;
-  if (!anyRows) {
-    tablesEl.innerHTML = emptyState(icon('usage'), 'No usage recorded yet',
-      'Once Sellbird starts making model calls (Claude or Codex), every one is logged here with exact calls and tokens by provider, agent and task.');
-  } else {
-    const providers = data.by_provider || [];
-    const showProviders = providers.length > 1 || (providers.length === 1 && providers[0].provider !== 'claude');
-    tablesEl.innerHTML =
-      (showProviders ? table('By Provider (30 days)', providers, 'Provider') : '') +
-      table('By Agent (30 days)', data.by_agent, 'Agent') +
-      table('By Task (30 days)', data.by_task, 'Task') +
-      table('By Model (30 days)', data.by_model, 'Model');
-  }
-}
-
-// ── Outbox: a decisions desk, not a wall of drafts ──
-//
-// Approving mail is a queue of one-at-a-time judgements. Showing all of them
-// stacked invites a single "approve all" reflex, which is exactly the review
-// the approval ladder exists to prevent. One email fills the pane; the rest
-// wait in the rail.
-
-async function loadOutbox() {
-  const [data, mode] = await Promise.all([api('/api/outbox'), api('/api/sending-mode')]);
-  _sendingMode = mode && !mode.error ? mode : null;
-  const banner = document.getElementById('outbox-banner');
-  const desk = document.getElementById('outbox-desk');
-  const list = document.getElementById('outbox-list');
-  const actions = document.getElementById('outbox-actions');
-  if (!data) { desk.innerHTML = offlineState(); list.innerHTML = ''; return; }
-  if (data.error) {
-    // Never let a failed read pass for "Nothing to review".
-    desk.innerHTML = emptyState(icon('alert'), 'Couldn\'t read the Outbox', escHtml(data.error));
-    list.innerHTML = '';
+  const top = document.getElementById('usage-top');
+  if (!data) {
+    top.innerHTML = offlineState();
+    document.getElementById('usage-daily').innerHTML = '';
+    document.getElementById('usage-tables').innerHTML = '';
     return;
   }
-
-  const pending = data.pending || [];
-  _desk.items = pending;
-  _desk.footer = data.footer || '';
-  // Keep the desk on the draft being edited even if the list shifted.
-  const editingAt = _desk.editing ? pending.findIndex(p => p.id === _desk.editing) : -1;
-  if (editingAt >= 0) _desk.i = editingAt;
-  else if (_desk.editing) {
-    _desk.editing = null;
-    _desk.unsaved = null;
-  }
-  if (_desk.i >= pending.length) _desk.i = Math.max(0, pending.length - 1);
-  navCount('nav-outbox', pending.length);
-
-  actions.innerHTML =
-    (pending.length && !data.paused
-      ? (pending.length > pending.filter(p => heldReason(p)).length
-        ? '<button class="btn btn-primary btn-sm" onclick="outboxApproveAll()" ' +
-          'title="Emails Sellbird held are left for you to approve one by one">Approve all ' +
-          (pending.length - pending.filter(p => heldReason(p)).length) + '</button>' : '') : '') +
-    (data.paused
-      ? '<button class="btn btn-secondary btn-sm" onclick="sendingToggle(\'resume\')">' +
-        'Resume sending</button>'
-      : '<button class="btn btn-secondary btn-sm" onclick="sendingToggle(\'pause\')">' +
-        'Pause all sending</button>');
-
-  // The kill switch gets a banner only when it's actually on — a permanent
-  // bar for a thing that isn't happening is just noise.
-  banner.innerHTML = sendingModeBanner(_sendingMode) + (data.paused
-    ? '<div class="banner bad">' + icon('alert') + '<div><b>Sending is paused</b>' +
-        '<p>' + escHtml(data.paused) + '. Approved mail stays queued until you resume.</p></div></div>'
-    : '');
-  // Only once there is mail to warn about: a fresh install sends nothing.
-  const anyMail = pending.length || (data.approved || []).length || (data.sent || []).length;
-  if (data.compliance_notice && anyMail) {
-    banner.innerHTML +=
-      '<div class="banner wait">' + icon('alert') + '<div><b>Add your postal address</b>' +
-        '<p>' + escHtml(data.compliance_notice) + '</p></div></div>';
-  }
-
-  desk.innerHTML = pending.length ? renderDesk(pending, _desk.i) :
-    '<div class="card">' + emptyState(icon('check'), 'Nothing to review',
-      _sendingMode && _sendingMode.mode === 'autopilot'
-        ? 'Autopilot is on, so Sellbird sends on its own. Anything it holds for you shows up here.'
-        : 'Every draft Sellbird writes lands here first. Approve one and it sends on schedule.') +
-    '</div>';
-
-  const table = (title, rows, cols) => {
-    if (!rows || !rows.length) return '';
-    let h = '<div class="subhead">' + title + ' <span class="hint">' + rows.length + '</span></div>' +
-      '<div class="table-card"><table class="nowrap clip"><thead><tr>' +
-      cols.map(c => '<th>' + c[0] + '</th>').join('') + '</tr></thead><tbody>';
-    for (const r of rows) {
-      h += '<tr>' + cols.map(c => '<td' + (c[2] ? ' class="muted"' : '') + '>' +
-        (c[3] ? c[1](r) : escHtml(String(c[1](r) ?? ''))) + '</td>').join('') + '</tr>';
-    }
-    return h + '</tbody></table></div>';
-  };
-
-  list.innerHTML =
-    table('Approved &amp; scheduled', data.approved, [
-      ['To', r => r.to_email], ['Step', r => r.step], ['Subject', r => r.subject],
-      ['Sends', r => r.status === 'sending' ? badge(r.status) : escHtml(formatDate(r.send_at)), true, true],
-    ]) +
-    table('Recently sent', data.sent, [
-      ['To', r => r.to_email], ['Step', r => r.step], ['Subject', r => r.subject],
-      ['Sent', r => formatDate(r.sent_at), true],
-    ]) +
-    table('Didn\'t send', data.failed, [
-      ['To', r => r.to_email], ['Status', r => badge(r.status), false, true],
-      ['Reason', r => r.error, true], ['Updated', r => formatDate(r.updated_at), true],
-    ]);
-}
-
-const CONTACT_SOURCES = {
-  known_company_backfill: 'team page on their site',
-  company_website: 'team page on their site',
-  scraped_mailto: 'address published on their site',
-  linkedin_search: 'LinkedIn search',
-  hunter_domain_search: 'Hunter domain search',
-  job_board: 'job board',
-  web_search: 'web search',
-};
-
-// What the draft is built on, so every claim can be checked against it.
-function renderDeskContext(ctx) {
-  if (!ctx) return '';
-  const row = (k, v) => v ? '<div class="k">' + k + '</div><div class="v">' + v + '</div>' : '';
-  const href = safeHref(ctx.website);
-  const site = href
-    ? '<a href="' + href + '" target="_blank" rel="noopener noreferrer">' +
-        escHtml(ctx.website.replace(/^https?:\/\//i, '')) + ' &#8599;</a>'
-    : '';
-  const who = [ctx.contact, ctx.contact_title].filter(Boolean).map(escHtml).join(' &middot; ');
-  const email = [ctx.email_status, ctx.score ? 'score ' + ctx.score : '']
-    .filter(Boolean).map(escHtml).join(' &middot; ');
-  const signals = Object.entries(ctx.signals || {})
-    .map(([k, v]) => escHtml(k) + ': <b>' + escHtml(v) + '</b>').join('<br>');
-  return '<div class="desk-context">' +
-    row('Company', escHtml(ctx.company)) +
-    row('Website', site) +
-    row('About', escHtml(ctx.description)) +
-    row('Contact', who) +
-    row('Found via', escHtml(Object.prototype.hasOwnProperty.call(CONTACT_SOURCES, ctx.contact_source)
-      ? CONTACT_SOURCES[ctx.contact_source] : ctx.contact_source)) +
-    row('Email', email) +
-    row('Signals', signals) +
-    row('Campaign', ctx.campaign ? escHtml(ctx.campaign) +
-      ' <span class="muted">(how they were found, not a fact about them)</span>' : '') +
-    row('Writer notes', escHtml(ctx.notes)) +
-  '</div>';
+  _usage = data;
+  // No dollars: on a subscription plan usage isn't billed per token.
+  top.innerHTML = quotaCardHtml(data) + usageCallsCard(data.totals);
+  document.getElementById('usage-daily').innerHTML = usageDailyCard(data.by_day);
+  setUsageTab(_usageTab);
 }
 
 // ── Approval or autopilot ──
@@ -1967,15 +1896,16 @@ function sendingModeCard(m) {
   const auto = m.mode === 'autopilot';
   const instantly = m.provider === 'instantly';
   const domains = (m.your_domains || []).map(escHtml).join(', ') || 'none yet';
-  let html = '<div class="card mode-card"><h3>Sending mode: ' + (auto ? 'Autopilot' : 'Approval') + '</h3>' +
-    '<p><b>Approval</b> (the default): every email Sellbird writes, first emails, follow-ups and replies, ' +
+  let html = '<div class="ui-card mode-card"><div class="ui-card__head"><h3 class="ui-card__title">Sending mode: ' + (auto ? 'Autopilot' : 'Approval') + '</h3>' +
+    '<span class="ui-badge ' + (auto ? 'is-warning' : 'is-success') + '">' + (auto ? 'Autopilot' : 'Approval') + '</span></div>' +
+    '<p class="mode-opt' + (auto ? '' : ' is-on') + '"><b>Approval</b> (the default): every email Sellbird writes, first emails, follow-ups and replies, ' +
       'waits in the Outbox until you approve it.' +
       (instantly ? ' On Instantly, which can’t hold single emails, that means campaigns aren’t deployed.' : '') + '</p>' +
-    '<p><b>Autopilot</b>: Sellbird sends on its own, on schedule, within your daily limit and quiet hours. ' +
+    '<p class="mode-opt' + (auto ? ' is-on' : '') + '"><b>Autopilot</b>: Sellbird sends on its own, on schedule, within your daily limit and quiet hours. ' +
       'Opt-outs, bounces and Pause all sending work the same. It still holds an email for you when it links ' +
       'to, or gives an address at, a site that isn’t yours, or quotes Sellbird’s own instructions: text from ' +
       'websites and replies can try to steer what it writes. The first reply after you undo an opt-out waits too.</p>' +
-    '<p class="muted">Counted as yours: ' + domains + (m.booking_page ? '; your booking page ' + escHtml(m.booking_page) : '') +
+    '<p class="mode-note">Counted as yours: ' + domains + (m.booking_page ? '; your booking page ' + escHtml(m.booking_page) : '') +
       '. Add others under <code>channels.email.link_domains</code> in <code>' + escHtml(m.file) + '</code>.</p>';
   if (auto) {
     html += '<div class="convo-actions"><span class="muted">Turning it off works at once: emails autopilot ' +
@@ -2009,6 +1939,7 @@ async function loadSendingModeCard() {
   const m = await api('/api/sending-mode');
   _sendingMode = m && !m.error ? m : null;
   renderSendingModeCard();
+  renderSettingsSummary();
 }
 
 async function setSendingMode(mode) {
@@ -2728,16 +2659,13 @@ const CONVO_FILTERS = [
   ['all', 'All', () => true],
 ];
 
+let _convoOpen = null;
+
 async function loadConversations() {
   const el = document.getElementById('conversations-list');
   const data = await api('/api/conversations?awaiting=1');
   if (!data) { el.innerHTML = offlineState(); return; }
   _convos = data;
-  if (!data.length) {
-    el.innerHTML = emptyState(icon('conversations'), 'No conversations yet',
-      'No prospects have replied so far. When they do, the Handler agent classifies each reply and responds — every thread shows up here.');
-    return;
-  }
   // Open on "Needs you" only when something needs you.
   if (_convoFilter === 'needs' && !data.some(CONVO_FILTERS[0][2]))
     _convoFilter = data.some(CONVO_FILTERS[1][2]) ? 'open' : 'all';
@@ -2745,27 +2673,85 @@ async function loadConversations() {
 }
 
 function setConvoFilter(f) { _convoFilter = f; renderConversations(); }
+function openConvo(id) { _convoOpen = id; renderConversations(); window.scrollTo(0, 0); }
+function closeConvo() { _convoOpen = null; renderConversations(); }
 
 function renderConversations() {
   const el = document.getElementById('conversations-list');
-  const filter = CONVO_FILTERS.find(f => f[0] === _convoFilter) || CONVO_FILTERS[CONVO_FILTERS.length - 1];
-  const bar = '<div class="toolbar"><div class="segmented" role="group" aria-label="Filter conversations">' +
-    CONVO_FILTERS.map(f => '<button class="' + (f[0] === filter[0] ? 'on' : '') + '" aria-pressed="' + (f[0] === filter[0]) +
-      '" onclick="setConvoFilter(\'' + f[0] + '\')">' + f[1] + ' <span class="n">' +
-      _convos.filter(f[2]).length + '</span></button>').join('') + '</div></div>';
-  // Handed-to-you first, then drafts waiting; otherwise newest first (as served).
-  const rank = c => c.status === 'needs_human' ? 0 : c.draft ? 1 : 2;
-  const shown = _convos.filter(filter[2]).map((c, i) => [c, i])
-    .sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(x => x[0]);
-  if (!shown.length) {
-    el.innerHTML = bar + '<div class="card">' + emptyState(icon('check'), 'Nothing here',
-      'No conversation matches this filter.') + '</div>';
+  const open = _convoOpen && _convos.find(c => c.id === _convoOpen);
+  if (open) { el.innerHTML = convoDetailPage(open); return; }
+  _convoOpen = null;
+  const head = uiPageHead({title: 'Conversations', sub: 'Every reply, and how Sellbird handled it.'});
+  if (!_convos.length) {
+    el.innerHTML = head + convoSummary([]) + convoTiles([], 'all') + uiCard({body: uiEmpty('No conversations yet',
+      'No prospects have replied so far. When they do, the Handler agent classifies each reply and responds, every thread shows up here.',
+      '<a href="#" class="ui-link-arrow" onclick="goTab(\'outbox\');return false">View outbox' + icon('arrow') + '</a>')});
     return;
   }
-  el.innerHTML = bar + shown.map(convoCard).join('');
+  el.innerHTML = head + convoSummary(_convos) + convoTiles(_convos, _convoFilter) + convoTable(_convos, _convoFilter);
 }
 
-function convoCard(c) {
+// The four numbers over the list, counted from what the tab loaded.
+function convoSummary(convos) {
+  const real = (convos || []).filter(c => c.status !== 'awaiting_reply');
+  const since = Date.now() - 14 * 86400000;
+  const recent = real.filter(c => +parseTs(c.created_at) >= since).length;
+  return uiMetricStrip([
+    {label: 'Replies', value: String(recent), sub: 'last 14 days'},
+    {label: 'Interested', value: String(real.filter(c => c.intent === 'interested' || c.intent === 'accepted_offer').length), sub: 'ready for a meeting'},
+    {label: 'Objections', value: String(real.filter(c => c.intent === 'objection').length), sub: 'answered by Sellbird'},
+    {label: 'Opted out', value: String((convos || []).filter(c => c.prospect_status === 'opted_out' || c.intent === 'unsubscribe').length), sub: 'never emailed again'},
+  ]);
+}
+
+// Count tiles: one per existing filter, the selected one outlined.
+function convoTiles(convos, active) {
+  return '<div class="convo-tiles" role="tablist" aria-label="Filter conversations">' + CONVO_FILTERS.map(f =>
+    '<button type="button" class="convo-tile" role="tab" aria-selected="' + (f[0] === active) + '" onclick="setConvoFilter(\''
+    + f[0] + '\')"><span>' + escHtml(f[1]) + '</span><span class="convo-tile__n">'
+    + (convos || []).filter(f[2]).length + '</span></button>').join('') + '</div>';
+}
+
+function convoStatusBadge(c) {
+  if (c.status === 'needs_human') return uiBadge('warning', 'Needs you');
+  if (c.draft) return uiBadge('warning', 'Reply waiting');
+  if (c.status === 'open') return uiBadge('info', 'Open');
+  if (c.status === 'awaiting_reply') return uiBadge('neutral', 'Awaiting reply');
+  if (c.status === 'closed') return uiBadge('neutral', 'Closed');
+  return uiBadge('neutral', statusMeta(c.status).label);
+}
+
+// The newest thing said in the thread: a message, or the last email sent.
+function convoLast(c) {
+  const t = (c.thread || []).filter(m => m && m.content);
+  if (t.length) return String(t[t.length - 1].content);
+  const e = (c.emails || []).filter(x => x && x.subject);
+  return e.length ? 'Email ' + (e[e.length - 1].step || 1) + ': ' + e[e.length - 1].subject : '';
+}
+
+function convoTable(convos, filterKey) {
+  const filter = CONVO_FILTERS.find(f => f[0] === filterKey) || CONVO_FILTERS[CONVO_FILTERS.length - 1];
+  // Handed-to-you first, then drafts waiting; otherwise newest first (as served).
+  const rank = c => c.status === 'needs_human' ? 0 : c.draft ? 1 : 2;
+  const shown = (convos || []).filter(filter[2]).map((c, i) => [c, i])
+    .sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(x => x[0]);
+  return uiTable({
+    columns: [
+      {key: 'who', header: 'Contact', render: c => '<span class="ui-cell-main">'
+        + escHtml([c.first_name, c.last_name].filter(Boolean).join(' ') || c.company || c.prospect_email || 'Unknown') + '</span>'
+        + '<span class="ui-cell-sub">' + escHtml([c.company, c.prospect_email].filter(Boolean).join(' · ')) + '</span>'},
+      {key: 'status', header: 'Status', render: convoStatusBadge},
+      {key: 'stage', header: 'Stage', render: c => own(STAGE_LABELS, c.stage) ? uiBadge('neutral', STAGE_LABELS[c.stage]) : uiDash('')},
+      {key: 'last', header: 'Last message', render: c => '<span class="convo-last">' + uiDash(convoLast(c)) + '</span>'},
+      {key: 'when', header: 'When', align: 'right', render: c => uiDash(relTime(c.updated_at))},
+    ],
+    rows: shown, empty: 'No conversation matches this filter.',
+    onRow: c => 'openConvo(' + jsq(c.id) + ')',
+  });
+}
+
+// The whole exchange in order, oldest first.
+function convoThread(c) {
   const items = (c.emails || []).map(e => ({ts: e.sent_at, email: e}))
     .concat((c.thread || []).map(m => ({ts: m.timestamp, msg: m})))
     .map(it => ({...it, key: +parseTs(it.ts)}))
@@ -2789,17 +2775,27 @@ function convoCard(c) {
       '<div class="td-body">' + escHtml(c.draft.body) + '</div>' +
       '<button class="btn btn-primary btn-sm" onclick="goTab(\'outbox\')">Review in Outbox' + icon('arrow') + '</button></div>'
     : '';
-  const name = [c.first_name, c.last_name].filter(Boolean).join(' ') || c.company || 'Unknown';
-  const stage = own(STAGE_LABELS, c.stage) ? '<span class="tag">' + STAGE_LABELS[c.stage] + '</span>' : '';
-  return '<div class="convo-card"><div class="convo-head">' +
-    '<span class="avatar">' + initials(c.first_name, c.last_name) + '</span>' +
-    '<div><h3>' + escHtml(name) + '</h3><div class="sub">' +
-      escHtml([c.company, c.prospect_email].filter(Boolean).join(' · ')) + ' · ' + relTime(c.updated_at) + '</div></div>' +
-    // An escalation's intent badge says the same as its status: show one.
-    '<div class="tags">' + (c.intent && !(c.status === 'needs_human' && c.intent === 'escalate') ? badge(c.intent) : '') +
-      stage + badge(c.status) + '</div></div>' +
-    '<div class="thread">' + (thread || '<p class="muted" style="font-size:13px">No messages in this thread yet.</p>') +
-    draft + '</div>' + convoActions(c) + '</div>';
+  return '<div class="thread">' + (thread || '<p class="muted">No messages in this thread yet.</p>') + draft + '</div>';
+}
+
+function convoDetailPage(c) {
+  const name = [c.first_name, c.last_name].filter(Boolean).join(' ') || c.company || c.prospect_email || 'Unknown';
+  const sub = [c.company, c.prospect_email].filter(Boolean).join(' · ');
+  const intent = c.intent && !(c.status === 'needs_human' && c.intent === 'escalate')
+    ? uiBadge(statusMeta(c.intent).tone === 'good' ? 'success' : statusMeta(c.intent).tone === 'bad' ? 'danger' : 'neutral', statusMeta(c.intent).label) : '';
+  const facts = '<dl class="ui-details">'
+    + '<div><dt>Status</dt><dd>' + convoStatusBadge(c) + '</dd></div>'
+    + '<div><dt>Intent</dt><dd>' + (intent || uiDash('')) + '</dd></div>'
+    + '<div><dt>Stage</dt><dd>' + (own(STAGE_LABELS, c.stage) ? escHtml(STAGE_LABELS[c.stage]) : uiDash('')) + '</dd></div>'
+    + '<div><dt>Email</dt><dd>' + uiDash(c.prospect_email) + '</dd></div>'
+    + '<div><dt>Last activity</dt><dd>' + uiDash(relTime(c.updated_at)) + '</dd></div></dl>';
+  const actions = convoActions(c);
+  return uiPageHead({title: name, sub,
+      crumbs: [{label: 'Conversations', js: 'closeConvo()'}, {label: name}]})
+    + '<div class="convo-detail">'
+    + uiCard({title: 'Thread', body: convoThread(c)})
+    + '<div class="ui-stack">' + uiCard({title: 'Details', body: facts + (actions ? '<div class="convo-detail__actions">' + actions + '</div>' : '')}) + '</div>'
+    + '</div>';
 }
 
 // Sellbird answers new replies only on open conversations: an escalated one
@@ -3249,26 +3245,97 @@ async function submitAddInbox() {
   }, 1500);
 }
 
+let _activity = [], _actFilter = {date: 'all', agent: '', type: '', offset: 0};
+
 async function loadActivity() {
   const el = document.getElementById('activity-list');
   const data = await api('/api/activity');
-  if (!data) { el.innerHTML = offlineState(); return; }
-  if (!data.length) {
-    el.innerHTML = emptyState(icon('activity'), 'No activity yet',
-      'Sellbird hasn\'t taken any actions. Every prospect found, email written, and reply handled will appear here the moment it happens.');
-    return;
+  if (!data) {
+    document.getElementById('activity-summary').innerHTML = '';
+    el.innerHTML = offlineState(); return;
   }
-  let html = '<div class="card"><div class="timeline">';
-  let day = '';
-  for (const a of data) {
-    const label = dayLabel(a.created_at);
-    if (label !== day) { day = label; html += '<div class="tl-day">' + escHtml(label) + '</div>'; }
-    html += '<div class="tl-item' + (a.agent === 'main' ? ' quiet' : '') + '"><span class="tl-time">' + timeOfDay(a.created_at) + '</span>' +
-      '<span class="tl-icon">' + icon(own(AGENT_ICONS, a.agent) || 'activity') + '</span>' +
-      '<span class="tl-text">' + actionText(a) + '</span>' +
-      '<span class="tl-agent">' + escHtml(a.agent) + '</span></div>';
+  _activity = data;
+  renderActivity();
+}
+
+function renderActivity() {
+  document.getElementById('activity-summary').innerHTML = activitySummary(_activity);
+  document.getElementById('activity-list').innerHTML = activityFeed(_activity, _actFilter);
+}
+
+function setActivityFilter(key, value) {
+  _actFilter = {..._actFilter, [key]: value, offset: 0};
+  renderActivity();
+}
+
+function pageActivity(offset) { _actFilter = {..._actFilter, offset}; renderActivity(); }
+
+// Four numbers from the last 100 actions the endpoint returns.
+function activitySummary(actions) {
+  const today = (actions || []).filter(a => dayLabel(a.created_at) === 'Today');
+  const agents = [...new Set(today.map(a => a.agent).filter(Boolean))];
+  const last = (actions || [])[0];
+  const lastText = last ? (actionText(last).replace(/<[^>]*>/g, '')) : '';
+  const decode = s => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
+  return uiMetricStrip([
+    {label: 'Events today', value: String(today.length), sub: (actions || []).length >= 100 ? 'in the last 100 events' : 'since midnight'},
+    {label: 'Agents active', value: String(agents.length), sub: agents.join(', ') || 'none today'},
+    {label: 'Campaigns written', value: String(today.filter(a => a.action_type === 'write_campaign').length), sub: 'today'},
+    {label: 'Last event', value: last ? timeOfDay(last.created_at) : null,
+     sub: lastText ? decode(lastText).charAt(0).toLowerCase() + decode(lastText).slice(1) : ''},
+  ]);
+}
+
+// A filter chip with a native select: "⊕ Agent" until one is picked, then "⊗ Agent | scout".
+function activityFilterChip(key, label, value, options) {
+  const on = !!value;
+  return '<label class="act-filter' + (on ? ' is-applied' : '') + '">' + icon(on ? 'close' : 'plus')
+    + '<span>' + escHtml(label) + '</span>' + (on ? '<span class="act-filter__sep"></span>' : '')
+    + '<select aria-label="' + escHtml(label) + '" onchange="setActivityFilter(' + jsq(key) + ', this.value)">'
+    + options.map(o => '<option value="' + escHtml(o[0]) + '"' + (o[0] === value ? ' selected' : '') + '>' + escHtml(o[1]) + '</option>').join('')
+    + '</select></label>';
+}
+
+function activityRows(actions, f) {
+  return (actions || []).filter(a =>
+    (f.date !== 'today' || dayLabel(a.created_at) === 'Today') &&
+    (!f.agent || a.agent === f.agent) && (!f.type || a.action_type === f.type));
+}
+
+function activityFeed(actions, f, size = 25) {
+  const all = actions || [];
+  if (!all.length) {
+    return uiCard({body: uiEmpty('No activity yet',
+      'Sellbird hasn\'t taken any actions. Every prospect found, email written, and reply handled will appear here the moment it happens.')});
   }
-  el.innerHTML = html + '</div></div>';
+  const uniq = k => [...new Set(all.map(a => a[k]).filter(Boolean))].sort();
+  const chips = '<div class="ui-chips">'
+    + activityFilterChip('date', 'Date', f.date === 'today' ? 'today' : '', [['', 'All'], ['today', 'Today']])
+    + activityFilterChip('agent', 'Agent', f.agent, [['', 'All']].concat(uniq('agent').map(a => [a, a])))
+    + activityFilterChip('type', 'Type', f.type, [['', 'All']].concat(uniq('action_type').map(t => [t, t.replace(/_/g, ' ')])))
+    + '</div>';
+  const rows = activityRows(all, f);
+  if (!rows.length) {
+    return chips + uiCard({body: uiEmpty('No activity matches these filters', 'Clear a filter to see more.')});
+  }
+  return chips + '<div>' + activityTable(pageSlice(rows, f.offset || 0, size))
+    + uiPager({total: rows.length, offset: f.offset || 0, size, onPage: o => 'pageActivity(' + o + ')'}) + '</div>';
+}
+
+// The loaded log as CSV, built in the page: no new endpoint.
+function exportActivity() {
+  const rows = activityRows(_activity, _actFilter);
+  if (!rows.length) { showToast('Nothing to export.', 'error'); return; }
+  const cell = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+  const div = document.createElement('div');
+  const text = a => { div.innerHTML = actionText(a); return div.textContent; };
+  const csv = ['time,agent,type,event'].concat(rows.map(a =>
+    [a.created_at, a.agent, a.action_type, text(a)].map(cell).join(','))).join('\n');
+  const url = URL.createObjectURL(new Blob([csv], {type: 'text/csv'}));
+  const link = document.createElement('a');
+  link.href = url; link.download = 'activity.csv';
+  document.body.appendChild(link); link.click(); link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 // ── Init & live refresh ──
