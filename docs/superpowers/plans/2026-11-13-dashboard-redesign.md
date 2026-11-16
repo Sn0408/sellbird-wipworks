@@ -20,7 +20,7 @@
 - Status is always a badge with a word, never colour alone. Empty values render as an em dash.
 - Existing test hooks in `app.js` stay as they are: the top-level functions `escHtml`, `jsq`, `own`, `safeHref`, `formatDate`, `icon`, `brainCallChips`, `quotaCardHtml`, `optOutPanel`, `convoActions`, `sendingModeBanner`, `sendingModeCard`, the constant `OPT_OUT_RULES`, the `STATUS` object, and the source order `lockIfRefused` < `showLock` and `runCohort` < `exportCohort` < `pageCohort` (tests slice between them). Strings those tests assert (e.g. "Approval mode", "Turn on autopilot…") stay. In `index.html`: `/static/auth.js` before `/static/app.js`, `downloadCsv('/api/export/prospects.csv'`, `value="accelerator"`, `value="funding"`.
 - The repo is public. No real person or business name, email or domain in code, tests, docs or commits. The mockup's sample copy has real names: never copy it. Use `example.com` data in tests. `design-screens/` stays uncommitted.
-- Work only in the worktree from Task 1. Never run anything against `/Users/sabarishnair/outreach agent/data/sellbird.db` and never use the main checkout's `.venv` in the worktree. Never press the top bar's start switch against the dev copy.
+- Work only in the worktree from Task 1. Never run anything against `<repo>/data/sellbird.db` and never use the main checkout's `.venv` in the worktree. Never press the top bar's start switch against the dev copy.
 - A redesign may not drop any feature. If a mockup element needs data no endpoint returns, show what can be counted with an honest label ("last 25") or leave it out and add it to `docs/dashboard-redesign-left-out.md`.
 
 ## Review Focus
@@ -67,11 +67,11 @@ def run_js(names, call, prelude=""):
 - Commit: `docs/superpowers/specs/2026-11-13-dashboard-redesign-design.md`, this plan
 
 **Interfaces:**
-- Produces: dev dashboard at `http://127.0.0.1:5556`, worktree path `WT=/Users/sabarishnair/outreach agent/.worktrees/ui-redesign`, screenshot command `python design-screens/shoot_dashboard.py --root "$WT" --port 5556 --out design-screens/after/<label>`.
+- Produces: dev dashboard at `http://127.0.0.1:5556`, worktree path `WT=<repo>/.worktrees/ui-redesign`, screenshot command `python design-screens/shoot_dashboard.py --root "$WT" --port 5556 --out design-screens/after/<label>`.
 
 - [ ] **Step 1:** Use superpowers:using-git-worktrees. Add `.worktrees/` to `.git/info/exclude`, then `git worktree add .worktrees/ui-redesign -b ui-redesign main`.
 - [ ] **Step 2:** In the worktree: `/opt/homebrew/bin/python3.13 -m venv .venv && .venv/bin/pip install -e .`
-- [ ] **Step 3:** Copy data without keys. Run `.venv/bin/python -c "import sqlite3; s=sqlite3.connect('file:/Users/sabarishnair/outreach agent/data/sellbird.db?mode=ro', uri=True); d=sqlite3.connect('data/sellbird.db'); s.backup(d)"` (after `mkdir data`). Copy `sellbird.local.yaml` and `skills/` from the main checkout. Create `.env` containing only the non-secret host lines: `SMTP_HOST`, `SMTP_PORT`, `IMAP_HOST`, `IMAP_PORT`. No usernames, passwords or API keys.
+- [ ] **Step 3:** Copy data without keys. Run `.venv/bin/python -c "import sqlite3; s=sqlite3.connect('file:<repo>/data/sellbird.db?mode=ro', uri=True); d=sqlite3.connect('data/sellbird.db'); s.backup(d)"` (after `mkdir data`). Copy `sellbird.local.yaml` and `skills/` from the main checkout. Create `.env` containing only the non-secret host lines: `SMTP_HOST`, `SMTP_PORT`, `IMAP_HOST`, `IMAP_PORT`. No usernames, passwords or API keys.
 - [ ] **Step 4: Verify isolation.** `SELLBIRD_HOME="$WT" .venv/bin/python -c "from sellbird.paths import PROJECT_ROOT; print(PROJECT_ROOT)"` prints the worktree path. `grep -cE 'KEY|PASSWORD|USERNAME|SECRET|TOKEN' .env` prints `0`.
 - [ ] **Step 5:** Start the dev dashboard in the background from the worktree: `SELLBIRD_HOME="$WT" .venv/bin/sellbird dashboard --port 5556`. Never print its URL.
 - [ ] **Step 6:** Give `shoot_dashboard.py` `--root` (default main checkout), `--port` (default 5555) and `--out` arguments. It gets the URL from `<root>/.venv/bin/sellbird dashboard --url --port <port>` with `SELLBIRD_HOME=<root>`, and never prints it. Run it against 5556 into `design-screens/after/baseline`. Expected: 45 PNGs matching `design-screens/desktop-light` etc.
